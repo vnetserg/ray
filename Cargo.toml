@@ -1,0 +1,25 @@
+[package]
+name = "ray"
+version = "0.1.0"
+authors = ["Sergei Fomin <sergio-dna@yandex.ru>"]
+edition = "2018"
+
+[[bin]]
+name = "rayd"
+path = "bin/server.rs"
+
+[[bin]]
+name = "ray"
+path = "bin/client.rs"
+
+[dependencies]
+clap = "2.33"
+byte_string = "1.0.0"
+bytes = "0.4"
+futures = "0.3"
+prost = "0.5"
+tokio = { version = "0.2", features = ["macros"] }
+tonic = "0.1.0-beta.1"
+
+[build-dependencies]
+tonic-build = "0.1.0-beta.1"
