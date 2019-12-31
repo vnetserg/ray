@@ -26,10 +26,11 @@ use std::{
 	net::SocketAddr,
 };
 
+type Data = Box<[u8]>;
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct RayStorage {
-    map: Mutex<HashMap<Box<[u8]>, Box<[u8]>>>,
+    map: Mutex<HashMap<Data, Data>>,
 }
 
 #[tonic::async_trait]

@@ -15,7 +15,7 @@ use byte_string::ByteStr;
 
 use std::io::Read;
 
-const ABOUT: &'static str = "Ray command line interface";
+const ABOUT: &str = "Ray command line interface";
 
 #[derive(Debug)]
 enum Command {
@@ -92,7 +92,7 @@ fn parse_arguments() -> Arguments {
         "set" => {
             let inner = matches.subcommand_matches("set").unwrap();
             let value: String = inner.value_of("value").map(|value| value.into())
-                .unwrap_or_else(|| read_stdin());
+                .unwrap_or_else(read_stdin);
             Command::Set {
                 key: inner.value_of("key").unwrap().as_bytes().into(),
                 value: value.into_bytes().into_boxed_slice(),
