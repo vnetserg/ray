@@ -20,11 +20,11 @@ const ABOUT: &str = "Ray command line interface";
 #[derive(Debug)]
 enum Command {
     Get {
-        key: Box<[u8]>,
+        key: Vec<u8>,
     },
     Set {
-        key: Box<[u8]>,
-        value: Box<[u8]>,
+        key: Vec<u8>,
+        value: Vec<u8>,
     },
 }
 
@@ -86,7 +86,7 @@ fn parse_arguments() -> Arguments {
         "get" => {
             let inner = matches.subcommand_matches("get").unwrap();
             Command::Get {
-                key: inner.value_of("key").unwrap().as_bytes().into()
+                key: inner.value_of("key").unwrap().into()
             }
         },
         "set" => {
@@ -94,8 +94,8 @@ fn parse_arguments() -> Arguments {
             let value: String = inner.value_of("value").map(|value| value.into())
                 .unwrap_or_else(read_stdin);
             Command::Set {
-                key: inner.value_of("key").unwrap().as_bytes().into(),
-                value: value.into_bytes().into_boxed_slice(),
+                key: inner.value_of("key").unwrap().into(),
+                value: value.into_bytes(),
             }
         }
         _ => unreachable!(),
@@ -109,17 +109,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_arguments();
     let mut client = RayClient::connect(&args.address, args.port).await?;
 
-    let maybe_value = match args.command {
+    let value = match args.command {
         Command::Get{ key } => client.get(key).await?,
         Command::Set{ key, value } => client.set(key, value).await?,
     };
 
-    if let Some(value) = maybe_value {
-        let formatted = format!("{:?}", ByteStr::new(&value));
-        println!("{}", &formatted[1..]);
-    } else {
-        println!("#");
-    }
+    let formatted = format!("{:?}", ByteStr::new(&value));
+    println!("{}", &formatted[1..]);
 
     Ok(())
 }

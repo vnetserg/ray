@@ -6,17 +6,13 @@ service Storage {
     rpc Get (GetRequest) returns (GetReply);
 }
 
-message Value {
-    bytes value = 1;
-}
-
 message SetRequest {
    bytes key = 1;
-   Value value = 2;
+   bytes value = 2;
 }
 
 message SetReply {
-    Value previous = 1;
+    bytes previous = 1;
 }
 
 message GetRequest {
@@ -24,5 +20,5 @@ message GetRequest {
 }
 
 message GetReply {
-   Value value = 1;
+   bytes value = 1;
 }

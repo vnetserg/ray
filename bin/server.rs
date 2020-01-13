@@ -44,15 +44,17 @@ impl Storage for RayStorage {
         let request = request.into_inner();
         let key = request.key.into_boxed_slice();
 
-        let previous = {
+        let maybe_previous = {
             let mut map = self.map.lock().await;
-            match request.value {
-                Some(value) => map.insert(key, value.into()),
-                None => map.remove(&key),
+            if request.value.is_empty() {
+                map.remove(&key)
+            } else {
+                map.insert(key, request.value.into())
             }
         };
+        let previous = maybe_previous.map(|value| value.to_vec()).unwrap_or(Vec::new());
 
-        let reply = SetReply { previous: previous.map(|value| value.into()) };
+        let reply = SetReply { previous };
         Ok(Response::new(reply))
     }
 
@@ -64,9 +66,10 @@ impl Storage for RayStorage {
 
         let request = request.into_inner();
         let key = request.key.into_boxed_slice();
-        let value = self.map.lock().await.get(&key).cloned();
+        let maybe_value = self.map.lock().await.get(&key).cloned();
+        let value = maybe_value.map(|value| value.to_vec()).unwrap_or(Vec::new());
 
-        let reply = GetReply { value: value.map(|value| value.into()) };
+        let reply = GetReply { value };
         Ok(Response::new(reply))
     }
 }

@@ -13,9 +13,10 @@ name = "ray"
 path = "bin/client.rs"
 
 [dependencies]
-clap = "2.33"
-byte_string = "1.0.0"
+bincode = "1.2"
+byte_string = "1.0"
 bytes = "0.4"
+clap = "2.33"
 futures = "0.3"
 prost = "0.5"
 tokio = { version = "0.2", features = ["macros"] }
