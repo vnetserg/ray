@@ -10,6 +10,12 @@ use ray::{
         GetRequest,
         GetReply,
     },
+    server::{
+        StorageMachine,
+        MutationLog,
+        PersistentMachineHandle,
+        run_persistent_state_machine,
+    }
 };
 
 use tonic::{
@@ -19,42 +25,23 @@ use tonic::{
     Status
 };
 
-use futures::lock::Mutex;
+use std::net::SocketAddr;
 
-use std::{
-	collections::HashMap,
-	net::SocketAddr,
-};
-
-type Data = Box<[u8]>;
-
-#[derive(Default)]
-struct RayStorage {
-    map: Mutex<HashMap<Data, Data>>,
+struct RayStorageService {
+    handle: PersistentMachineHandle<StorageMachine>,
 }
 
 #[tonic::async_trait]
-impl Storage for RayStorage {
+impl Storage for RayStorageService {
     async fn set(
         &self,
         request: Request<SetRequest>,
     ) -> Result<Response<SetReply>, Status> {
         println!("Got a request: {:?}", request);
 
-        let request = request.into_inner();
-        let key = request.key.into_boxed_slice();
+        self.handle.apply_mutation(request.into_inner()).await;
 
-        let maybe_previous = {
-            let mut map = self.map.lock().await;
-            if request.value.is_empty() {
-                map.remove(&key)
-            } else {
-                map.insert(key, request.value.into())
-            }
-        };
-        let previous = maybe_previous.map(|value| value.to_vec()).unwrap_or(Vec::new());
-
-        let reply = SetReply { previous };
+        let reply = SetReply {};
         Ok(Response::new(reply))
     }
 
@@ -66,10 +53,9 @@ impl Storage for RayStorage {
 
         let request = request.into_inner();
         let key = request.key.into_boxed_slice();
-        let maybe_value = self.map.lock().await.get(&key).cloned();
-        let value = maybe_value.map(|value| value.to_vec()).unwrap_or(Vec::new());
+        let value = self.handle.query_state(key).await;
 
-        let reply = GetReply { value };
+        let reply = GetReply { value: value.to_vec() };
         Ok(Response::new(reply))
     }
 }
@@ -77,7 +63,10 @@ impl Storage for RayStorage {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let addr = SocketAddr::new("127.0.0.1".parse().unwrap(), DEFAULT_PORT);
-    let storage = RayStorage::default();
+    let log = MutationLog::new("rayd.log");
+    let storage = RayStorageService {
+        handle: run_persistent_state_machine(log),
+    };
 
     Server::builder()
         .add_service(StorageServer::new(storage))

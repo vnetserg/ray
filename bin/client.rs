@@ -109,13 +109,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_arguments();
     let mut client = RayClient::connect(&args.address, args.port).await?;
 
-    let value = match args.command {
-        Command::Get{ key } => client.get(key).await?,
-        Command::Set{ key, value } => client.set(key, value).await?,
+    match args.command {
+        Command::Set{ key, value } => {
+            client.set(key, value).await?;
+        },
+        Command::Get{ key } => {
+            let value = client.get(key).await?;
+            let formatted = format!("{:?}", ByteStr::new(&value));
+            println!("{}", &formatted[1..]);
+        },
     };
-
-    let formatted = format!("{:?}", ByteStr::new(&value));
-    println!("{}", &formatted[1..]);
 
     Ok(())
 }

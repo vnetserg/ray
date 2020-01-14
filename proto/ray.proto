@@ -11,9 +11,7 @@ message SetRequest {
    bytes value = 2;
 }
 
-message SetReply {
-    bytes previous = 1;
-}
+message SetReply {}
 
 message GetRequest {
     bytes key = 1;

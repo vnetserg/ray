@@ -26,9 +26,9 @@ impl RayClient {
         response.map(|resp| resp.into_inner().value)
     }
 
-    pub async fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<Vec<u8>, Status> {
+    pub async fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), Status> {
         let request = Request::new(proto::SetRequest { key, value });
         let response = self.client.set(request).await;
-        response.map(|resp| resp.into_inner().previous)
+        response.map(|_| ())
     }
 }

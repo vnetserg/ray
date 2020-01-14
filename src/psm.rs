@@ -1,6 +1,10 @@
-use tokio::runtime;
-
 use prost::Message;
+use tokio::runtime;
+use byteorder::{
+    LittleEndian,
+    ReadBytesExt,
+    WriteBytesExt,
+};
 
 use futures::{
     channel::{
@@ -124,36 +128,36 @@ pub struct PersistentMachineHandle<M: Machine> {
 }
 
 impl<M: Machine> PersistentMachineHandle<M> {
-    pub async fn apply_mutation(&mut self, mutation: M::Mutation) {
+    pub async fn apply_mutation(&self, mutation: M::Mutation) {
         let (sender, receiver) = oneshot::channel();
         let request = LogServiceRequest::PersistMutation {
             mutation,
             notify: sender,
         };
-        self.log_sender.send(request).await.expect("log_receiver dropped");
+        self.log_sender.clone().send(request).await.expect("log_receiver dropped");
         receiver.await.expect("sender dropped");
     }
 
-    pub async fn query_state(&mut self, query: M::Query) -> M::Status {
+    pub async fn query_state(&self, query: M::Query) -> M::Status {
         let epoch = self.get_persisted_epoch().await;
         self.query_state_after(query, epoch).await
     }
 
-    async fn get_persisted_epoch(&mut self) -> u64 {
+    async fn get_persisted_epoch(&self) -> u64 {
         let (sender, receiver) = oneshot::channel();
         let request = LogServiceRequest::GetPersistedEpoch(sender);
-        self.log_sender.send(request).await.expect("log_receiver dropped");
+        self.log_sender.clone().send(request).await.expect("log_receiver dropped");
         receiver.await.expect("sender dropped")
     }
 
-    async fn query_state_after(&mut self, query: M::Query, epoch: u64) -> M::Status {
+    async fn query_state_after(&self, query: M::Query, epoch: u64) -> M::Status {
         let (sender, receiver) = oneshot::channel();
         let request = MachineServiceRequest::<M> {
             query,
             min_epoch: epoch,
             result: sender,
         };
-        self.machine_sender.send(request).await.expect("machine_receiver dropped");
+        self.machine_sender.clone().send(request).await.expect("machine_receiver dropped");
         receiver.await.expect("sender dropped")
     }
 }
@@ -169,26 +173,20 @@ struct LogService<L: PersistentLog, U: Message + Default> {
 impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
     pub async fn recover(&mut self) {
         loop {
-            let len = match self.read_u32() {
-                Some(n) => n,
-                None => return,
+            let len = match self.log.read_u32::<LittleEndian>() {
+                Ok(n) => n,
+                Err(err) => {
+                    if err.kind() == io::ErrorKind::UnexpectedEof {
+                        return;
+                    } else {
+                        panic!("Failed to read PersistentLog: {}", err);
+                    }
+                },
             };
             let mutation = self.read_mutation(len as usize);
             self.persisted_epoch += 1;
             self.mutation_sender.send(mutation).await.expect("mutation receiver dropped");
         }
-    }
-
-    fn read_u32(&mut self) -> Option<u32> {
-        let mut buf: [u8; 4] = [0; 4];
-        if let Err(err) = self.log.read_exact(&mut buf) {
-            if err.kind() == io::ErrorKind::UnexpectedEof {
-                return None;
-            } else {
-                panic!("Failed to read PersistentLog: {}", err);
-            }
-        }
-        Some(unsafe { std::mem::transmute(buf) })
     }
 
     fn read_mutation(&mut self, len: usize) -> U {
@@ -226,11 +224,14 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
 
             for mutation in mutations.iter() {
                 let len = mutation.encoded_len();
-                self.write_u32(len as u32);
+                self.log.write_u32::<LittleEndian>(len as u32)
+                    .unwrap_or_else(|err| panic!("Failed to write to log: {}", err));
                 self.write_mutation(mutation, len);
             }
 
-            self.log.persist().unwrap_or_else(|err| panic!("Failed to persist log: {}", err));
+            if !mutations.is_empty() {
+                self.log.persist().unwrap_or_else(|err| panic!("Failed to persist log: {}", err));
+            }
 
             for notify in notifiers.into_iter() {
                 notify.send(()).ok(); // Ignore error
@@ -243,14 +244,12 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
         }
     }
 
-    fn write_u32(&mut self, value: u32) {
-        let buf: [u8; 4] = unsafe { std::mem::transmute(value) };
-        self.log.write_all(&buf).unwrap_or_else(|err| panic!("Failed to write to log: {}", err));
-    }
-
     fn write_mutation(&mut self, mutation: &U, len: usize) {
-        let mut buf = vec![0; len];
+        let mut buf = Vec::with_capacity(len);
         mutation.encode(&mut buf).unwrap_or_else(|err| panic!("Failed to encode mutation: {}", err));
+        if buf.len() != len {
+            panic!("write_mutation len mismatch: expected {}, actual {}", len, buf.len());
+        }
         self.log.write_all(&buf).unwrap_or_else(|err| panic!("Failed to write to log: {}", err));
     }
 }
