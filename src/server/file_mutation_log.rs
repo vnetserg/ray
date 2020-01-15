@@ -1,4 +1,4 @@
-use super::psm::PersistentLog;
+use super::log_service::PersistentLog;
 
 use std::{
     convert::AsRef,
@@ -17,11 +17,11 @@ enum LogMode {
     Writing(io::BufWriter<fs::File>),
 }
 
-pub struct MutationLog {
+pub struct FileMutationLog {
     mode: LogMode,
 }
 
-impl MutationLog {
+impl FileMutationLog {
     pub fn new<P: AsRef<Path> + Display>(path: P) -> Self {
         let file = fs::OpenOptions::new()
             .read(true)
@@ -48,7 +48,7 @@ impl MutationLog {
     }
 }
 
-impl Read for MutationLog {
+impl Read for FileMutationLog {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self.mode {
             LogMode::Reading(ref mut reader) => reader.read(buf),
@@ -57,7 +57,7 @@ impl Read for MutationLog {
     }
 }
 
-impl Write for MutationLog {
+impl Write for FileMutationLog {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let writer = self.get_writer();
         writer.write(buf)
@@ -69,7 +69,7 @@ impl Write for MutationLog {
     }
 }
 
-impl PersistentLog for MutationLog {
+impl PersistentLog for FileMutationLog {
     fn persist(&mut self) -> io::Result<()> {
         let writer = self.get_writer();
         writer.flush().and_then(|_| writer.get_ref().sync_data())

@@ -11,10 +11,9 @@ use ray::{
         GetReply,
     },
     server::{
-        StorageMachine,
-        MutationLog,
-        PersistentMachineHandle,
-        run_persistent_state_machine,
+        run_storage,
+        StorageHandle,
+        FileMutationLog,
     }
 };
 
@@ -28,7 +27,7 @@ use tonic::{
 use std::net::SocketAddr;
 
 struct RayStorageService {
-    handle: PersistentMachineHandle<StorageMachine>,
+    handle: StorageHandle,
 }
 
 #[tonic::async_trait]
@@ -63,9 +62,9 @@ impl Storage for RayStorageService {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let addr = SocketAddr::new("127.0.0.1".parse().unwrap(), DEFAULT_PORT);
-    let log = MutationLog::new("rayd.log");
+    let log = FileMutationLog::new("rayd.log");
     let storage = RayStorageService {
-        handle: run_persistent_state_machine(log),
+        handle: run_storage(log),
     };
 
     Server::builder()

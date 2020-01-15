@@ -1,6 +1,6 @@
-use super::{
+use crate::{
     proto,
-    psm::Machine,
+    server::machine_service::Machine,
 };
 
 use std::collections::HashMap;
