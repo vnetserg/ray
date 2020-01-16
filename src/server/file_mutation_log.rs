@@ -1,15 +1,15 @@
-use super::log_service::PersistentLog;
+use super::{
+    config::MutationLogConfig,
+    log_service::PersistentLog,
+};
 
 use std::{
-    convert::AsRef,
     fs,
-    fmt::Display,
     io::{
         self,
         Read,
         Write,
     },
-    path::Path,
 };
 
 enum LogMode {
@@ -22,13 +22,13 @@ pub struct FileMutationLog {
 }
 
 impl FileMutationLog {
-    pub fn new<P: AsRef<Path> + Display>(path: P) -> Self {
+    pub fn new(config: &MutationLogConfig) -> Self {
         let file = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)
-            .unwrap_or_else(|err| panic!("Failed to open '{}': {}", path, err));
+            .open(&config.path)
+            .unwrap_or_else(|err| panic!("Failed to open '{}': {}", config.path, err));
         let reader = io::BufReader::new(file);
         Self {
             mode: LogMode::Reading(reader)

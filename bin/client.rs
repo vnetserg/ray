@@ -1,6 +1,6 @@
 use ray::{
     client::RayClient,
-    config::DEFAULT_PORT,
+    server::Config,
 };
 
 use clap::{
@@ -45,8 +45,8 @@ fn read_stdin() -> String {
 }
 
 fn parse_arguments() -> Arguments {
-    let default_port_string = DEFAULT_PORT.to_string();
-	let parser = App::new(env!("CARGO_PKG_NAME"))
+    let default_port_string = Config::default().rpc.port.to_string();
+	let parser = App::new("ray")
                          .version(ray::VERSION)
                          .author(ray::AUTHORS)
                          .about(ABOUT)

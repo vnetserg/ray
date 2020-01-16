@@ -42,6 +42,7 @@ pub struct LogService<L: PersistentLog, U: Message + Default> {
     log: L,
     mutation_sender: mpsc::Sender<U>,
     request_receiver: mpsc::Receiver<LogServiceRequest<U>>,
+    batch_size: usize,
     persisted_epoch: u64,
 }
 
@@ -49,12 +50,14 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
     pub fn new(
         log: L,
         mutation_sender: mpsc::Sender<U>,
-        request_receiver: mpsc::Receiver<LogServiceRequest<U>>
+        request_receiver: mpsc::Receiver<LogServiceRequest<U>>,
+        batch_size: usize,
     ) -> Self {
         Self {
             log,
             mutation_sender,
             request_receiver,
+            batch_size,
             persisted_epoch: 0,
         }
     }
@@ -89,8 +92,8 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
             let mut mutations = vec![];
             let mut notifiers = vec![];
 
-            for i in 0..100 {
-                let request = if i == 0i32 {
+            for i in 0 .. self.batch_size {
+                let request = if i == 0 {
                     self.request_receiver.next().await.expect("all request senders dropped")
                 } else {
                     match self.request_receiver.try_next() {
