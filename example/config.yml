@@ -10,7 +10,7 @@ psm:
         request_queue_size: 10000
         batch_size: 100
 mutation_log:
-    path: ./rayd.mutation.log
+    path: ./rayd-log.bin
 # logging:
 #    - output: file
 #      path: ./rayd.debug.log

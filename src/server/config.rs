@@ -74,7 +74,7 @@ pub struct MutationLogConfig {
 impl Default for MutationLogConfig {
     fn default() -> Self {
         Self {
-            path: String::from("./rayd.mut.log"),
+            path: String::from("./rayd-log.bin"),
         }
     }
 }
