@@ -34,12 +34,16 @@ use std::{
 
 pub fn serve_forever(config: Config) -> ! {
     let ip_address = config.rpc.address.parse().unwrap_or_else(|_| {
-        eprintln!("Error: '{}' is not a valid IP address", config.rpc.address);
+        error!("'{}' is not a valid IP address", config.rpc.address);
         exit(1);
     });
 	let socket_address = SocketAddr::new(ip_address, config.rpc.port);
 
-    let log = FileMutationLog::new(&config.mutation_log);
+    let log = FileMutationLog::new(&config.mutation_log).unwrap_or_else(|err| {
+        error!("Failed to open '{}': {}", &config.mutation_log.path, err);
+        exit(1);
+    });
+
     let handle = run_psm(log, &config.psm);
     let storage = RayStorageService::new(handle);
     let server = Server::builder()
@@ -58,6 +62,8 @@ pub fn serve_forever(config: Config) -> ! {
         .enable_all()
         .build()
         .expect("Failed to build Tokio runtime");
+
+    info!("Serving rayd on {}", socket_address);
 
     match runtime.block_on(server) {
         Ok(()) => exit(0),

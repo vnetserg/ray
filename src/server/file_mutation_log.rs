@@ -22,17 +22,18 @@ pub struct FileMutationLog {
 }
 
 impl FileMutationLog {
-    pub fn new(config: &MutationLogConfig) -> Self {
-        let file = fs::OpenOptions::new()
+    pub fn new(config: &MutationLogConfig) -> io::Result<Self> {
+        let maybe_file = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .open(&config.path)
-            .unwrap_or_else(|err| panic!("Failed to open '{}': {}", config.path, err));
-        let reader = io::BufReader::new(file);
-        Self {
-            mode: LogMode::Reading(reader)
-        }
+            .open(&config.path);
+        maybe_file.map(|file| {
+            let reader = io::BufReader::new(file);
+            Self {
+                mode: LogMode::Reading(reader)
+            }
+        })
     }
 
     fn get_writer(&mut self) -> &mut io::BufWriter<fs::File> {

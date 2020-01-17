@@ -150,6 +150,7 @@ impl<M: Machine> MachineService<M> {
     fn handle_mutation_request(&mut self, mutation: M::Mutation) {
         self.machine.apply_mutation(mutation);
         self.epoch += 1;
+        debug!("Applied mutation (new epoch: {})", self.epoch);
         while !self.request_queue.is_empty()
             && self.epoch >= self.request_queue.peek().unwrap().min_epoch
         {

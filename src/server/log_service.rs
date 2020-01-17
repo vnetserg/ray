@@ -68,7 +68,7 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
                 Ok(n) => n,
                 Err(err) => {
                     if err.kind() == io::ErrorKind::UnexpectedEof {
-                        return;
+                        break;
                     } else {
                         panic!("Failed to read PersistentLog: {}", err);
                     }
@@ -77,6 +77,9 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
             let mutation = self.read_mutation(len as usize);
             self.persisted_epoch += 1;
             self.mutation_sender.send(mutation).await.expect("mutation receiver dropped");
+        }
+        if self.persisted_epoch > 0 {
+            info!("Recovered {} mutations from log", self.persisted_epoch);
         }
     }
 
@@ -122,6 +125,11 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
 
             if !mutations.is_empty() {
                 self.log.persist().unwrap_or_else(|err| panic!("Failed to persist log: {}", err));
+                self.persisted_epoch += mutations.len() as u64;
+                debug!("Wrote {} mutations to log (persisted epoch: {})",
+                    mutations.len(),
+                    self.persisted_epoch,
+                );
             }
 
             for notify in notifiers.into_iter() {
