@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate log;
-
 use ray::{
     server::{
         Config,
@@ -45,31 +42,23 @@ fn parse_arguments() -> Arguments {
 
 fn read_config(path: &str) -> Config {
     let mut file = File::open(path).unwrap_or_else(|err| {
-        error!("Failed to open '{}': {}", path, err);
+        eprintln!("Failed to open '{}': {}", path, err);
         exit(1);
     });
 
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).unwrap_or_else(|err| {
-        error!("Failed to read '{}': {}", path, err);
+        eprintln!("Failed to read '{}': {}", path, err);
         exit(1);
     });
 
     serde_yaml::from_slice(&buffer).unwrap_or_else(|err| {
-        error!("Failed to parse config: {}", err);
+        eprintln!("Failed to parse config: {}", err);
         exit(1);
     })
 }
 
-fn init_logging() {
-    // log_panics::init();
-    env_logger::Builder::new()
-        .filter_module("ray", log::LevelFilter::Debug)
-        .init();
-}
-
 fn main() {
-    init_logging();
     let args = parse_arguments();
     let config = args.config.map(|path| read_config(&path)).unwrap_or_default();
     serve_forever(config);

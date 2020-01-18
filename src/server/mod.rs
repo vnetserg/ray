@@ -5,7 +5,11 @@ mod log_service;
 mod file_mutation_log;
 mod rpc;
 
-pub use config::Config;
+pub use config::{
+    Config,
+    LoggingConfig,
+    LoggingTarget,
+};
 
 use config::PsmConfig;
 use machine_service::{
@@ -25,7 +29,18 @@ use tonic::transport::Server;
 use tokio::runtime;
 use futures::channel::mpsc;
 
+use simplelog::{
+    CombinedLogger,
+    SharedLogger,
+    TermLogger,
+    WriteLogger,
+    TerminalMode,
+    LevelPadding,
+};
+use log::LevelFilter;
+
 use std::{
+    fs,
     thread,
     future::Future,
     net::SocketAddr,
@@ -33,6 +48,8 @@ use std::{
 };
 
 pub fn serve_forever(config: Config) -> ! {
+    init_logging(&config.logging);
+
     let ip_address = config.rpc.address.parse().unwrap_or_else(|_| {
         error!("'{}' is not a valid IP address", config.rpc.address);
         exit(1);
@@ -72,6 +89,55 @@ pub fn serve_forever(config: Config) -> ! {
             exit(1);
         },
     }
+}
+
+fn init_logging(configs: &[LoggingConfig]) {
+    log_panics::init();
+
+    let sl_config = simplelog::ConfigBuilder::new()
+        .add_filter_allow_str("ray")
+        .add_filter_allow_str("panic")
+        .set_time_format_str("%F %T%.3f")
+        .set_target_level(LevelFilter::Error)
+        .set_thread_level(LevelFilter::Off)
+        .set_level_padding(LevelPadding::Off)
+        .build();
+
+    let loggers = configs.iter().map(|config| {
+        let logger: Box<dyn SharedLogger> = match &config.target {
+            LoggingTarget::Stderr => {
+                TermLogger::new(
+                    config.level.into(),
+                    sl_config.clone(),
+                    TerminalMode::Mixed,
+                ).unwrap_or_else(|| {
+                    eprintln!("Failed to create terminal logger");
+                    exit(1);
+                })
+            },
+            LoggingTarget::File{ path } => {
+                let maybe_file = fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(path);
+                let file = maybe_file.unwrap_or_else(|err| {
+                    eprintln!("Failed to open '{}': {}", path, err);
+                    exit(1);
+                });
+                WriteLogger::new(
+                    config.level.into(),
+                    sl_config.clone(),
+                    file,
+                )
+            },
+        };
+        logger
+    }).collect();
+
+    CombinedLogger::init(loggers).unwrap_or_else(|err| {
+        eprintln!("Failed to initialize combined logger: {}", err);
+        exit(1);
+    });
 }
 
 

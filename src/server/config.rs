@@ -1,11 +1,29 @@
 use serde::{Serialize, Deserialize};
+use log::LevelFilter;
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub rpc: RpcConfig,
     pub psm: PsmConfig,
     pub mutation_log: MutationLogConfig,
+    pub logging: Vec<LoggingConfig>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            rpc: RpcConfig::default(),
+            psm: PsmConfig::default(),
+            mutation_log: MutationLogConfig::default(),
+            logging: vec![
+                LoggingConfig {
+                    target: LoggingTarget::Stderr,
+                    level: LogLevel::Info,
+                },
+            ],
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -75,6 +93,42 @@ impl Default for MutationLogConfig {
     fn default() -> Self {
         Self {
             path: String::from("./rayd-log.bin"),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoggingConfig {
+    pub target: LoggingTarget,
+    pub level: LogLevel,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum LoggingTarget {
+    #[serde(rename = "stderr")] Stderr,
+    #[serde(rename = "file")] File {
+        path: String,
+    },
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum LogLevel {
+    #[serde(rename = "debug")] Debug,
+    #[serde(rename = "info")] Info,
+    #[serde(rename = "warn")] Warn,
+    #[serde(rename = "error")] Error,
+}
+
+impl From<LogLevel> for LevelFilter {
+    fn from(level: LogLevel) -> log::LevelFilter {
+        match level {
+            LogLevel::Debug => LevelFilter::Debug,
+            LogLevel::Info => LevelFilter::Info,
+            LogLevel::Warn => LevelFilter::Warn,
+            LogLevel::Error => LevelFilter::Error,
         }
     }
 }

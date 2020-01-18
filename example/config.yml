@@ -2,6 +2,7 @@ rpc:
     threads: 0  # equal to the number of CPUs
     address: 127.0.0.1
     port: 39172
+
 psm:
     machine_service:
         request_queue_size: 10000
@@ -9,11 +10,16 @@ psm:
     log_service:
         request_queue_size: 10000
         batch_size: 100
+
 mutation_log:
     path: ./rayd-log.bin
-# logging:
-#    - output: file
-#      path: ./rayd.debug.log
-#      level: debug
-#    - output: stderr
-#      level: info
+
+logging:
+    - target:
+        type: file
+        path: ./rayd.debug.log
+      level: debug
+
+    - target:
+        type: stderr
+      level: info
