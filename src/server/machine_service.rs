@@ -3,33 +3,25 @@ use super::log_service::LogServiceRequest;
 use prost::Message;
 
 use futures::{
-    channel::{
-        mpsc,
-        oneshot,
-    },
+    channel::{mpsc, oneshot},
     select,
     sink::SinkExt,
     stream::StreamExt,
 };
 
 use std::{
+    cmp::{self, Ordering},
     collections::BinaryHeap,
-    cmp::{
-        self,
-        Ordering,
-    },
 };
 
-
-pub trait Machine : Default + Send + 'static {
-    type Mutation : Message + Default;
-    type Query : Send;
-    type Status : Send;
+pub trait Machine: Default + Send + 'static {
+    type Mutation: Message + Default;
+    type Query: Send;
+    type Status: Send;
 
     fn apply_mutation(&mut self, mutation: Self::Mutation);
     fn query_state(&self, query: Self::Query) -> Self::Status;
 }
-
 
 pub struct MachineServiceRequest<M: Machine> {
     query: M::Query,
@@ -43,7 +35,7 @@ impl<M: Machine> cmp::PartialEq for MachineServiceRequest<M> {
     }
 }
 
-impl<M: Machine> cmp::Eq for MachineServiceRequest<M> { }
+impl<M: Machine> cmp::Eq for MachineServiceRequest<M> {}
 
 impl<M: Machine> cmp::PartialOrd for MachineServiceRequest<M> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -56,7 +48,6 @@ impl<M: Machine> cmp::Ord for MachineServiceRequest<M> {
         self.partial_cmp(other).unwrap()
     }
 }
-
 
 #[derive(Clone)]
 pub struct MachineServiceHandle<M: Machine> {
@@ -81,7 +72,11 @@ impl<M: Machine> MachineServiceHandle<M> {
             mutation,
             notify: sender,
         };
-        self.log_sender.clone().send(request).await.expect("log_receiver dropped");
+        self.log_sender
+            .clone()
+            .send(request)
+            .await
+            .expect("log_receiver dropped");
         receiver.await.expect("sender dropped");
     }
 
@@ -93,7 +88,11 @@ impl<M: Machine> MachineServiceHandle<M> {
     async fn get_persisted_epoch(&self) -> u64 {
         let (sender, receiver) = oneshot::channel();
         let request = LogServiceRequest::GetPersistedEpoch(sender);
-        self.log_sender.clone().send(request).await.expect("log_receiver dropped");
+        self.log_sender
+            .clone()
+            .send(request)
+            .await
+            .expect("log_receiver dropped");
         receiver.await.expect("sender dropped")
     }
 
@@ -104,11 +103,14 @@ impl<M: Machine> MachineServiceHandle<M> {
             min_epoch: epoch,
             result: sender,
         };
-        self.machine_sender.clone().send(request).await.expect("machine_receiver dropped");
+        self.machine_sender
+            .clone()
+            .send(request)
+            .await
+            .expect("machine_receiver dropped");
         receiver.await.expect("sender dropped")
     }
 }
-
 
 pub struct MachineService<M: Machine> {
     mutation_receiver: mpsc::Receiver<M::Mutation>,

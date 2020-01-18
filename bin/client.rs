@@ -1,15 +1,6 @@
-use ray::{
-    client::RayClient,
-    server::Config,
-};
+use ray::{client::RayClient, server::Config};
 
-use clap::{
-	Arg,
-	App,
-    AppSettings,
-	SubCommand,
-    value_t_or_exit,
-};
+use clap::{value_t_or_exit, App, AppSettings, Arg, SubCommand};
 
 use byte_string::ByteStr;
 
@@ -19,13 +10,8 @@ const ABOUT: &str = "Ray command line interface";
 
 #[derive(Debug)]
 enum Command {
-    Get {
-        key: Vec<u8>,
-    },
-    Set {
-        key: Vec<u8>,
-        value: Vec<u8>,
-    },
+    Get { key: Vec<u8> },
+    Set { key: Vec<u8>, value: Vec<u8> },
 }
 
 #[derive(Debug)]
@@ -37,46 +23,56 @@ struct Arguments {
 
 fn read_stdin() -> String {
     let mut result = String::new();
-    std::io::stdin().read_to_string(&mut result).map_err(|error| {
-        eprintln!("Error: {}", error);
-        std::process::exit(1);
-    }).unwrap();
+    std::io::stdin()
+        .read_to_string(&mut result)
+        .map_err(|error| {
+            eprintln!("Error: {}", error);
+            std::process::exit(1);
+        })
+        .unwrap();
     result
 }
 
 fn parse_arguments() -> Arguments {
     let default_port_string = Config::default().rpc.port.to_string();
-	let parser = App::new("ray")
-                         .version(ray::VERSION)
-                         .author(ray::AUTHORS)
-                         .about(ABOUT)
-                         .setting(AppSettings::SubcommandRequiredElseHelp)
-                         .arg(Arg::with_name("address")
-                              .short("a")
-                              .long("address")
-                              .value_name("ADDRESS")
-                              .help("rayd host address")
-                              .takes_value(true)
-                              .default_value("localhost"))
-                         .arg(Arg::with_name("port")
-                              .short("p")
-                              .long("port")
-                              .value_name("PORT")
-                              .help("rayd TCP port")
-                              .takes_value(true)
-                              .default_value(&default_port_string))
-                         .subcommand(SubCommand::with_name("get")
-                                    .about("Get value of given key")
-                                    .arg(Arg::with_name("key")
-                                         .help("key to get")
-                                         .required(true)))
-                         .subcommand(SubCommand::with_name("set")
-                                    .about("Set value for given key")
-                                    .arg(Arg::with_name("key")
-                                         .help("key to set value for")
-                                         .required(true))
-                                    .arg(Arg::with_name("value")
-                                         .help("value to set")));
+    let parser = App::new("ray")
+        .version(ray::VERSION)
+        .author(ray::AUTHORS)
+        .about(ABOUT)
+        .setting(AppSettings::SubcommandRequiredElseHelp)
+        .arg(
+            Arg::with_name("address")
+                .short("a")
+                .long("address")
+                .value_name("ADDRESS")
+                .help("rayd host address")
+                .takes_value(true)
+                .default_value("localhost"),
+        )
+        .arg(
+            Arg::with_name("port")
+                .short("p")
+                .long("port")
+                .value_name("PORT")
+                .help("rayd TCP port")
+                .takes_value(true)
+                .default_value(&default_port_string),
+        )
+        .subcommand(
+            SubCommand::with_name("get")
+                .about("Get value of given key")
+                .arg(Arg::with_name("key").help("key to get").required(true)),
+        )
+        .subcommand(
+            SubCommand::with_name("set")
+                .about("Set value for given key")
+                .arg(
+                    Arg::with_name("key")
+                        .help("key to set value for")
+                        .required(true),
+                )
+                .arg(Arg::with_name("value").help("value to set")),
+        );
     let matches = parser.get_matches();
 
     let address = matches.value_of("address").unwrap().to_string();
@@ -86,12 +82,14 @@ fn parse_arguments() -> Arguments {
         "get" => {
             let inner = matches.subcommand_matches("get").unwrap();
             Command::Get {
-                key: inner.value_of("key").unwrap().into()
+                key: inner.value_of("key").unwrap().into(),
             }
-        },
+        }
         "set" => {
             let inner = matches.subcommand_matches("set").unwrap();
-            let value: String = inner.value_of("value").map(|value| value.into())
+            let value: String = inner
+                .value_of("value")
+                .map(|value| value.into())
                 .unwrap_or_else(read_stdin);
             Command::Set {
                 key: inner.value_of("key").unwrap().into(),
@@ -101,7 +99,11 @@ fn parse_arguments() -> Arguments {
         _ => unreachable!(),
     };
 
-    Arguments { address, port, command }
+    Arguments {
+        address,
+        port,
+        command,
+    }
 }
 
 #[tokio::main]
@@ -110,14 +112,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = RayClient::connect(&args.address, args.port).await?;
 
     match args.command {
-        Command::Set{ key, value } => {
+        Command::Set { key, value } => {
             client.set(key, value).await?;
-        },
-        Command::Get{ key } => {
+        }
+        Command::Get { key } => {
             let value = client.get(key).await?;
             let formatted = format!("{:?}", ByteStr::new(&value));
             println!("{}", &formatted[1..]);
-        },
+        }
     };
 
     Ok(())

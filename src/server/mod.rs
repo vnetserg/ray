@@ -1,51 +1,29 @@
 mod config;
-mod machine_service;
-mod storage_machine;
-mod log_service;
 mod file_mutation_log;
+mod log_service;
+mod machine_service;
 mod rpc;
+mod storage_machine;
 
-pub use config::{
-    Config,
-    LoggingConfig,
-    LoggingTarget,
-};
+pub use config::{Config, LoggingConfig, LoggingTarget};
 
-use config::PsmConfig;
-use machine_service::{
-    Machine,
-    MachineService,
-    MachineServiceHandle,
-};
-use log_service::{
-    PersistentLog,
-    LogService,
-};
-use file_mutation_log::FileMutationLog;
-use rpc::RayStorageService;
 use super::proto::storage_server::StorageServer;
+use config::PsmConfig;
+use file_mutation_log::FileMutationLog;
+use log_service::{LogService, PersistentLog};
+use machine_service::{Machine, MachineService, MachineServiceHandle};
+use rpc::RayStorageService;
 
-use tonic::transport::Server;
-use tokio::runtime;
 use futures::channel::mpsc;
+use tokio::runtime;
+use tonic::transport::Server;
 
-use simplelog::{
-    CombinedLogger,
-    SharedLogger,
-    TermLogger,
-    WriteLogger,
-    TerminalMode,
-    LevelPadding,
-};
 use log::LevelFilter;
-
-use std::{
-    fs,
-    thread,
-    future::Future,
-    net::SocketAddr,
-    process::exit,
+use simplelog::{
+    CombinedLogger, LevelPadding, SharedLogger, TermLogger, TerminalMode, WriteLogger,
 };
+
+use std::{fs, future::Future, net::SocketAddr, process::exit, thread};
 
 pub fn serve_forever(config: Config) -> ! {
     init_logging(&config.logging);
@@ -54,7 +32,7 @@ pub fn serve_forever(config: Config) -> ! {
         error!("'{}' is not a valid IP address", config.rpc.address);
         exit(1);
     });
-	let socket_address = SocketAddr::new(ip_address, config.rpc.port);
+    let socket_address = SocketAddr::new(ip_address, config.rpc.port);
 
     let log = FileMutationLog::new(&config.mutation_log).unwrap_or_else(|err| {
         error!("Failed to open '{}': {}", &config.mutation_log.path, err);
@@ -87,7 +65,7 @@ pub fn serve_forever(config: Config) -> ! {
         Err(err) => {
             eprintln!("Error: {}", err);
             exit(1);
-        },
+        }
     }
 }
 
@@ -103,43 +81,35 @@ fn init_logging(configs: &[LoggingConfig]) {
         .set_level_padding(LevelPadding::Off)
         .build();
 
-    let loggers = configs.iter().map(|config| {
-        let logger: Box<dyn SharedLogger> = match &config.target {
-            LoggingTarget::Stderr => {
-                TermLogger::new(
-                    config.level.into(),
-                    sl_config.clone(),
-                    TerminalMode::Mixed,
-                ).unwrap_or_else(|| {
-                    eprintln!("Failed to create terminal logger");
-                    exit(1);
-                })
-            },
-            LoggingTarget::File{ path } => {
-                let maybe_file = fs::OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(path);
-                let file = maybe_file.unwrap_or_else(|err| {
-                    eprintln!("Failed to open '{}': {}", path, err);
-                    exit(1);
-                });
-                WriteLogger::new(
-                    config.level.into(),
-                    sl_config.clone(),
-                    file,
-                )
-            },
-        };
-        logger
-    }).collect();
+    let loggers = configs
+        .iter()
+        .map(|config| {
+            let logger: Box<dyn SharedLogger> = match &config.target {
+                LoggingTarget::Stderr => {
+                    TermLogger::new(config.level.into(), sl_config.clone(), TerminalMode::Mixed)
+                        .unwrap_or_else(|| {
+                            eprintln!("Failed to create terminal logger");
+                            exit(1);
+                        })
+                }
+                LoggingTarget::File { path } => {
+                    let maybe_file = fs::OpenOptions::new().append(true).create(true).open(path);
+                    let file = maybe_file.unwrap_or_else(|err| {
+                        eprintln!("Failed to open '{}': {}", path, err);
+                        exit(1);
+                    });
+                    WriteLogger::new(config.level.into(), sl_config.clone(), file)
+                }
+            };
+            logger
+        })
+        .collect();
 
     CombinedLogger::init(loggers).unwrap_or_else(|err| {
         eprintln!("Failed to initialize combined logger: {}", err);
         exit(1);
     });
 }
-
 
 fn run_psm<M: Machine, L: PersistentLog>(log: L, config: &PsmConfig) -> MachineServiceHandle<M> {
     let log_config = &config.log_service;
@@ -150,27 +120,16 @@ fn run_psm<M: Machine, L: PersistentLog>(log: L, config: &PsmConfig) -> MachineS
     let (mutation_sender, mutation_receiver) = mpsc::channel(machine_config.mutation_queue_size);
 
     let log_batch_size = log_config.batch_size;
-    run_in_dedicated_thread("rayd-log",
-        async move {
-            let mut log_service = LogService::<L, M::Mutation>::new(
-                log,
-                mutation_sender,
-                log_receiver,
-                log_batch_size,
-            );
-            log_service.recover().await;
-            log_service.serve().await;
-        }
-    );
-    run_in_dedicated_thread("rayd-machine",
-        async move {
-            let mut machine_service = MachineService::new(
-                mutation_receiver,
-                machine_receiver,
-            );
-            machine_service.serve().await;
-        }
-    );
+    run_in_dedicated_thread("rayd-log", async move {
+        let mut log_service =
+            LogService::<L, M::Mutation>::new(log, mutation_sender, log_receiver, log_batch_size);
+        log_service.recover().await;
+        log_service.serve().await;
+    });
+    run_in_dedicated_thread("rayd-machine", async move {
+        let mut machine_service = MachineService::new(mutation_receiver, machine_receiver);
+        machine_service.serve().await;
+    });
     MachineServiceHandle::new(log_sender, machine_sender)
 }
 

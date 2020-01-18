@@ -1,7 +1,4 @@
-use crate::{
-    proto,
-    server::machine_service::Machine,
-};
+use crate::{proto, server::machine_service::Machine};
 
 use std::collections::HashMap;
 
@@ -22,6 +19,9 @@ impl Machine for StorageMachine {
     }
 
     fn query_state(&self, query: Self::Query) -> Self::Status {
-        self.map.get(&query).cloned().unwrap_or(Vec::new().into_boxed_slice())
+        self.map
+            .get(&query)
+            .cloned()
+            .unwrap_or_else(|| Vec::new().into_boxed_slice())
     }
 }

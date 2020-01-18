@@ -1,33 +1,18 @@
 use prost::Message;
 
-use byteorder::{
-    LittleEndian,
-    ReadBytesExt,
-    WriteBytesExt,
-};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use futures::{
-    channel::{
-        mpsc,
-        oneshot,
-    },
+    channel::{mpsc, oneshot},
     sink::SinkExt,
     stream::StreamExt,
 };
 
-use std::{
-    io::{
-        self,
-        Write,
-        Read,
-    },
-};
+use std::io::{self, Read, Write};
 
-
-pub trait PersistentLog : Read + Write + Send + 'static {
+pub trait PersistentLog: Read + Write + Send + 'static {
     fn persist(&mut self) -> io::Result<()>;
 }
-
 
 pub enum LogServiceRequest<U: Message> {
     PersistMutation {
@@ -36,7 +21,6 @@ pub enum LogServiceRequest<U: Message> {
     },
     GetPersistedEpoch(oneshot::Sender<u64>),
 }
-
 
 pub struct LogService<L: PersistentLog, U: Message + Default> {
     log: L,
@@ -72,11 +56,14 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
                     } else {
                         panic!("Failed to read PersistentLog: {}", err);
                     }
-                },
+                }
             };
             let mutation = self.read_mutation(len as usize);
             self.persisted_epoch += 1;
-            self.mutation_sender.send(mutation).await.expect("mutation receiver dropped");
+            self.mutation_sender
+                .send(mutation)
+                .await
+                .expect("mutation receiver dropped");
         }
         if self.persisted_epoch > 0 {
             info!("Recovered {} mutations from log", self.persisted_epoch);
@@ -85,7 +72,8 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
 
     fn read_mutation(&mut self, len: usize) -> U {
         let mut buf = vec![0; len];
-        self.log.read_exact(&mut buf)
+        self.log
+            .read_exact(&mut buf)
             .unwrap_or_else(|err| panic!("Failed to read PersistentLog: {}", err));
         U::decode(buf).unwrap_or_else(|err| panic!("Failed to parse mutation: {}", err))
     }
@@ -95,9 +83,12 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
             let mut mutations = vec![];
             let mut notifiers = vec![];
 
-            for i in 0 .. self.batch_size {
+            for i in 0..self.batch_size {
                 let request = if i == 0 {
-                    self.request_receiver.next().await.expect("all request senders dropped")
+                    self.request_receiver
+                        .next()
+                        .await
+                        .expect("all request senders dropped")
                 } else {
                     match self.request_receiver.try_next() {
                         Ok(Some(req)) => req,
@@ -108,25 +99,29 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
                 match request {
                     LogServiceRequest::GetPersistedEpoch(response) => {
                         response.send(self.persisted_epoch).ok(); // Ignore error
-                    },
-                    LogServiceRequest::PersistMutation{ mutation, notify } => {
+                    }
+                    LogServiceRequest::PersistMutation { mutation, notify } => {
                         mutations.push(mutation);
                         notifiers.push(notify);
-                    },
+                    }
                 }
             }
 
             for mutation in mutations.iter() {
                 let len = mutation.encoded_len();
-                self.log.write_u32::<LittleEndian>(len as u32)
+                self.log
+                    .write_u32::<LittleEndian>(len as u32)
                     .unwrap_or_else(|err| panic!("Failed to write to log: {}", err));
                 self.write_mutation(mutation, len);
             }
 
             if !mutations.is_empty() {
-                self.log.persist().unwrap_or_else(|err| panic!("Failed to persist log: {}", err));
+                self.log
+                    .persist()
+                    .unwrap_or_else(|err| panic!("Failed to persist log: {}", err));
                 self.persisted_epoch += mutations.len() as u64;
-                debug!("Wrote {} mutations to log (persisted epoch: {})",
+                debug!(
+                    "Wrote {} mutations to log (persisted epoch: {})",
                     mutations.len(),
                     self.persisted_epoch,
                 );
@@ -137,7 +132,9 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
             }
 
             for mutation in mutations.into_iter() {
-                self.mutation_sender.send(mutation).await
+                self.mutation_sender
+                    .send(mutation)
+                    .await
                     .expect("PersistentLog mutation_sender failed");
             }
         }
@@ -145,10 +142,18 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
 
     fn write_mutation(&mut self, mutation: &U, len: usize) {
         let mut buf = Vec::with_capacity(len);
-        mutation.encode(&mut buf).unwrap_or_else(|err| panic!("Failed to encode mutation: {}", err));
+        mutation
+            .encode(&mut buf)
+            .unwrap_or_else(|err| panic!("Failed to encode mutation: {}", err));
         if buf.len() != len {
-            panic!("write_mutation len mismatch: expected {}, actual {}", len, buf.len());
+            panic!(
+                "write_mutation len mismatch: expected {}, actual {}",
+                len,
+                buf.len()
+            );
         }
-        self.log.write_all(&buf).unwrap_or_else(|err| panic!("Failed to write to log: {}", err));
+        self.log
+            .write_all(&buf)
+            .unwrap_or_else(|err| panic!("Failed to write to log: {}", err));
     }
 }

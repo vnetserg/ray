@@ -1,15 +1,8 @@
-use super::{
-    config::MutationLogConfig,
-    log_service::PersistentLog,
-};
+use super::{config::MutationLogConfig, log_service::PersistentLog};
 
 use std::{
     fs,
-    io::{
-        self,
-        Read,
-        Write,
-    },
+    io::{self, Read, Write},
 };
 
 enum LogMode {
@@ -31,7 +24,7 @@ impl FileMutationLog {
         maybe_file.map(|file| {
             let reader = io::BufReader::new(file);
             Self {
-                mode: LogMode::Reading(reader)
+                mode: LogMode::Reading(reader),
             }
         })
     }

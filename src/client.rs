@@ -1,12 +1,8 @@
 use super::proto;
 
 use tonic::{
-    Request,
-    Status,
-    transport::{
-        Channel,
-        Error,
-    },
+    transport::{Channel, Error},
+    Request, Status,
 };
 
 pub struct RayClient {
@@ -16,8 +12,9 @@ pub struct RayClient {
 impl RayClient {
     pub async fn connect(address: &str, port: u16) -> Result<Self, Error> {
         let url = format!("http://{}:{}", address, port);
-        proto::storage_client::StorageClient::connect(url).await
-            .map(|client| RayClient { client } )
+        proto::storage_client::StorageClient::connect(url)
+            .await
+            .map(|client| RayClient { client })
     }
 
     pub async fn get(&mut self, key: Vec<u8>) -> Result<Vec<u8>, Status> {

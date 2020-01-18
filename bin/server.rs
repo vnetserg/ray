@@ -1,21 +1,8 @@
-use ray::{
-    server::{
-        Config,
-        serve_forever,
-    }
-};
+use ray::server::{serve_forever, Config};
 
-use clap::{
-	Arg,
-	App,
-};
+use clap::{App, Arg};
 
-use std::{
-    fs::File,
-    io::Read,
-    process::exit,
-};
-
+use std::{fs::File, io::Read, process::exit};
 
 const ABOUT: &str = "Ray server";
 
@@ -24,16 +11,18 @@ struct Arguments {
 }
 
 fn parse_arguments() -> Arguments {
-	let parser = App::new("rayd")
-                         .version(ray::VERSION)
-                         .author(ray::AUTHORS)
-                         .about(ABOUT)
-                         .arg(Arg::with_name("config")
-                              .short("c")
-                              .long("config")
-                              .value_name("CONFIG_PATH")
-                              .help("path to rayd config file")
-                              .takes_value(true));
+    let parser = App::new("rayd")
+        .version(ray::VERSION)
+        .author(ray::AUTHORS)
+        .about(ABOUT)
+        .arg(
+            Arg::with_name("config")
+                .short("c")
+                .long("config")
+                .value_name("CONFIG_PATH")
+                .help("path to rayd config file")
+                .takes_value(true),
+        );
     let matches = parser.get_matches();
     let config = matches.value_of("config").map(|s| s.to_string());
 
@@ -60,6 +49,9 @@ fn read_config(path: &str) -> Config {
 
 fn main() {
     let args = parse_arguments();
-    let config = args.config.map(|path| read_config(&path)).unwrap_or_default();
+    let config = args
+        .config
+        .map(|path| read_config(&path))
+        .unwrap_or_default();
     serve_forever(config);
 }
