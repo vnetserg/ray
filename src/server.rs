@@ -70,11 +70,9 @@ pub fn serve_forever(config: Config) -> ! {
 }
 
 fn init_logging(configs: &[LoggingConfig]) {
-    log_panics::init();
-
     let sl_config = simplelog::ConfigBuilder::new()
         .add_filter_allow_str("ray")
-        .add_filter_allow_str("panic")
+        .add_filter_allow_str("log_panics")
         .set_time_format_str("%F %T%.3f")
         .set_target_level(LevelFilter::Error)
         .set_thread_level(LevelFilter::Off)
@@ -109,6 +107,8 @@ fn init_logging(configs: &[LoggingConfig]) {
         eprintln!("Failed to initialize combined logger: {}", err);
         exit(1);
     });
+
+    log_panics::init();
 }
 
 fn run_psm<M: Machine, L: PersistentLog>(log: L, config: &PsmConfig) -> MachineServiceHandle<M> {
