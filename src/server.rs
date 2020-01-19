@@ -23,7 +23,14 @@ use simplelog::{
     CombinedLogger, LevelPadding, SharedLogger, TermLogger, TerminalMode, WriteLogger,
 };
 
-use std::{fs, future::Future, net::SocketAddr, process::exit, thread};
+use std::{
+    fs,
+    future::Future,
+    net::SocketAddr,
+    panic::{catch_unwind, AssertUnwindSafe},
+    process::exit,
+    thread,
+};
 
 pub fn serve_forever(config: Config) -> ! {
     init_logging(&config.logging);
@@ -137,12 +144,19 @@ fn run_in_dedicated_thread<T: Future + Send + 'static>(thread_name: &'static str
     let thread = thread::Builder::new()
         .name(thread_name.to_string())
         .spawn(move || {
-            let mut runtime = runtime::Builder::new()
-                .basic_scheduler()
-                .build()
-                .expect("Failed to build Tokio runtime");
-            runtime.block_on(task);
-            panic!("Thread '{}' terminated unexpectedly", thread_name);
+            // NB: if thread panics, we want to kill the whole process.
+            let result = catch_unwind(AssertUnwindSafe(move || {
+                let mut runtime = runtime::Builder::new()
+                    .basic_scheduler()
+                    .build()
+                    .expect("Failed to build Tokio runtime");
+                runtime.block_on(task);
+            }));
+            if result.is_ok() {
+                error!("Thread '{}' finished it's task unexpectedly", thread_name);
+            }
+            // If panic did happen, it is already logged by the panic hook.
+            exit(1);
         });
     thread.expect("Failed to spawn thread");
 }
