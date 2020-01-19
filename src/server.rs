@@ -124,20 +124,22 @@ fn run_psm<M: Machine, L: PersistentLog>(log: L, config: &PsmConfig) -> MachineS
 
     let (log_sender, log_receiver) = mpsc::channel(log_config.request_queue_size);
     let (machine_sender, machine_receiver) = mpsc::channel(machine_config.request_queue_size);
-    let (mutation_sender, mutation_receiver) = mpsc::channel(machine_config.mutation_queue_size);
+    let handle = MachineServiceHandle::new(log_sender, machine_sender.clone());
 
     let log_batch_size = log_config.batch_size;
     run_in_dedicated_thread("rayd-log", async move {
         let mut log_service =
-            LogService::<L, M::Mutation>::new(log, mutation_sender, log_receiver, log_batch_size);
+            LogService::<L, M>::new(log, machine_sender, log_receiver, log_batch_size);
         log_service.recover().await;
         log_service.serve().await;
     });
+
     run_in_dedicated_thread("rayd-machine", async move {
-        let mut machine_service = MachineService::new(mutation_receiver, machine_receiver);
+        let mut machine_service = MachineService::new(machine_receiver);
         machine_service.serve().await;
     });
-    MachineServiceHandle::new(log_sender, machine_sender)
+
+    handle
 }
 
 fn run_in_dedicated_thread<T: Future + Send + 'static>(thread_name: &'static str, task: T) {
