@@ -104,7 +104,7 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
         self.log
             .read_exact(&mut buf)
             .unwrap_or_else(|err| panic!("Failed to read PersistentLog: {}", err));
-        U::decode(buf).unwrap_or_else(|err| panic!("Failed to parse mutation: {}", err))
+        U::decode(&buf[..]).unwrap_or_else(|err| panic!("Failed to parse mutation: {}", err))
     }
 
     pub async fn serve(&mut self) {
