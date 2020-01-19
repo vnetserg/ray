@@ -1,3 +1,5 @@
+use super::machine_service::MutationProposal;
+
 use prost::Message;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -24,7 +26,7 @@ pub enum LogServiceRequest<U: Message> {
 
 pub struct LogService<L: PersistentLog, U: Message + Default> {
     log: L,
-    mutation_sender: mpsc::Sender<U>,
+    proposal_sender: mpsc::Sender<MutationProposal<U>>,
     request_receiver: mpsc::Receiver<LogServiceRequest<U>>,
     batch_size: usize,
     persisted_epoch: u64,
@@ -33,13 +35,13 @@ pub struct LogService<L: PersistentLog, U: Message + Default> {
 impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
     pub fn new(
         log: L,
-        mutation_sender: mpsc::Sender<U>,
+        proposal_sender: mpsc::Sender<MutationProposal<U>>,
         request_receiver: mpsc::Receiver<LogServiceRequest<U>>,
         batch_size: usize,
     ) -> Self {
         Self {
             log,
-            mutation_sender,
+            proposal_sender,
             request_receiver,
             batch_size,
             persisted_epoch: 0,
@@ -47,27 +49,54 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
     }
 
     pub async fn recover(&mut self) {
-        loop {
-            let len = match self.log.read_u32::<LittleEndian>() {
-                Ok(n) => n,
-                Err(err) => {
-                    if err.kind() == io::ErrorKind::UnexpectedEof {
-                        break;
-                    } else {
-                        panic!("Failed to read PersistentLog: {}", err);
-                    }
-                }
-            };
+        let mut mutation_count = 0;
+        while let Some((epoch, len)) = self.read_header() {
+            if self.persisted_epoch > 0 && epoch != self.persisted_epoch + 1 {
+                panic!(
+                    "Missing mutation(s): expected epoch {}, got {}",
+                    self.persisted_epoch + 1,
+                    epoch
+                );
+            }
+            self.persisted_epoch = epoch;
+
             let mutation = self.read_mutation(len as usize);
-            self.persisted_epoch += 1;
-            self.mutation_sender
-                .send(mutation)
+            let proposal = MutationProposal::new(mutation, epoch);
+
+            self.proposal_sender
+                .send(proposal)
                 .await
-                .expect("mutation receiver dropped");
+                .expect("proposal receiver dropped");
+
+            mutation_count += 1;
         }
+
         if self.persisted_epoch > 0 {
-            info!("Recovered {} mutations from log", self.persisted_epoch);
+            info!(
+                "Recovered {} mutations from log (persisted epoch: {})",
+                mutation_count, self.persisted_epoch
+            );
         }
+    }
+
+    fn read_header(&mut self) -> Option<(u64, usize)> {
+        let mut buffer = [0u8; 12];
+        if let Err(err) = self.log.read_exact(&mut buffer[..1]) {
+            if err.kind() == io::ErrorKind::UnexpectedEof {
+                return None;
+            } else {
+                panic!("Failed to read PersistentLog: {}", err);
+            }
+        }
+        if let Err(err) = self.log.read_exact(&mut buffer[1..]) {
+            panic!("Failed to read PersistentLog: {}", err);
+        }
+
+        let mut reader = &buffer[..];
+        let epoch = reader.read_u64::<LittleEndian>().unwrap();
+        let len = reader.read_u32::<LittleEndian>().unwrap();
+
+        Some((epoch, len as usize))
     }
 
     fn read_mutation(&mut self, len: usize) -> U {
@@ -80,8 +109,9 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
 
     pub async fn serve(&mut self) {
         loop {
-            let mut mutations = vec![];
+            let mut proposals = vec![];
             let mut notifiers = vec![];
+            let mut epoch = self.persisted_epoch;
 
             for i in 0..self.batch_size {
                 let request = if i == 0 {
@@ -101,28 +131,31 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
                         response.send(self.persisted_epoch).ok(); // Ignore error
                     }
                     LogServiceRequest::PersistMutation { mutation, notify } => {
-                        mutations.push(mutation);
+                        epoch += 1;
+                        proposals.push(MutationProposal::new(mutation, epoch));
                         notifiers.push(notify);
                     }
                 }
             }
 
-            for mutation in mutations.iter() {
+            for proposal in proposals.iter() {
+                let mutation = proposal.get_mutation();
                 let len = mutation.encoded_len();
                 self.log
-                    .write_u32::<LittleEndian>(len as u32)
+                    .write_u64::<LittleEndian>(proposal.get_epoch())
+                    .and_then(|_| Ok(self.log.write_u32::<LittleEndian>(len as u32)?))
                     .unwrap_or_else(|err| panic!("Failed to write to log: {}", err));
                 self.write_mutation(mutation, len);
             }
 
-            if !mutations.is_empty() {
+            if !proposals.is_empty() {
                 self.log
                     .persist()
                     .unwrap_or_else(|err| panic!("Failed to persist log: {}", err));
-                self.persisted_epoch += mutations.len() as u64;
+                self.persisted_epoch += proposals.len() as u64;
                 debug!(
                     "Wrote {} mutations to log (persisted epoch: {})",
-                    mutations.len(),
+                    proposals.len(),
                     self.persisted_epoch,
                 );
             }
@@ -131,11 +164,11 @@ impl<L: PersistentLog, U: Message + Default> LogService<L, U> {
                 notify.send(()).ok(); // Ignore error
             }
 
-            for mutation in mutations.into_iter() {
-                self.mutation_sender
-                    .send(mutation)
+            for proposal in proposals.into_iter() {
+                self.proposal_sender
+                    .send(proposal)
                     .await
-                    .expect("PersistentLog mutation_sender failed");
+                    .expect("PersistentLog proposal_sender failed");
             }
         }
     }

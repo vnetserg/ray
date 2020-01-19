@@ -12,10 +12,11 @@ use futures::{
 use std::{
     cmp::{self, Ordering},
     collections::BinaryHeap,
+    fmt::Display,
 };
 
 pub trait Machine: Default + Send + 'static {
-    type Mutation: Message + Default;
+    type Mutation: Message + Default + Display;
     type Query: Send;
     type Status: Send;
 
@@ -39,6 +40,7 @@ impl<M: Machine> cmp::Eq for MachineServiceRequest<M> {}
 
 impl<M: Machine> cmp::PartialOrd for MachineServiceRequest<M> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        // NB: reverse is needed for min-heap
         Some(self.min_epoch.cmp(&other.min_epoch).reverse())
     }
 }
@@ -112,8 +114,27 @@ impl<M: Machine> MachineServiceHandle<M> {
     }
 }
 
+pub struct MutationProposal<U> {
+    mutation: U,
+    epoch: u64,
+}
+
+impl<U> MutationProposal<U> {
+    pub fn new(mutation: U, epoch: u64) -> Self {
+        Self { mutation, epoch }
+    }
+
+    pub fn get_mutation(&self) -> &U {
+        &self.mutation
+    }
+
+    pub fn get_epoch(&self) -> u64 {
+        self.epoch
+    }
+}
+
 pub struct MachineService<M: Machine> {
-    mutation_receiver: mpsc::Receiver<M::Mutation>,
+    proposal_receiver: mpsc::Receiver<MutationProposal<M::Mutation>>,
     request_receiver: mpsc::Receiver<MachineServiceRequest<M>>,
     machine: M,
     epoch: u64,
@@ -122,11 +143,11 @@ pub struct MachineService<M: Machine> {
 
 impl<M: Machine> MachineService<M> {
     pub fn new(
-        mutation_receiver: mpsc::Receiver<M::Mutation>,
+        proposal_receiver: mpsc::Receiver<MutationProposal<M::Mutation>>,
         request_receiver: mpsc::Receiver<MachineServiceRequest<M>>,
     ) -> Self {
         Self {
-            mutation_receiver,
+            proposal_receiver,
             request_receiver,
             machine: M::default(),
             epoch: 0,
@@ -137,22 +158,37 @@ impl<M: Machine> MachineService<M> {
     pub async fn serve(&mut self) {
         loop {
             select! {
-                mutation = self.mutation_receiver.next() => {
-                    let mutation = mutation.expect("MachineService mutation_receiver terminated");
-                    self.handle_mutation_request(mutation);
+                proposal = self.proposal_receiver.next() => {
+                    let proposal = proposal.expect("MachineService proposal_receiver terminated");
+                    self.handle_mutation_proposal(proposal);
                 },
                 request = self.request_receiver.next() => {
                     let request = request.expect("MachineService request_receiver terminated");
-                    self.handle_query_request(request);
+                    self.handle_query(request);
                 },
             }
         }
     }
 
-    fn handle_mutation_request(&mut self, mutation: M::Mutation) {
+    fn handle_mutation_proposal(&mut self, proposal: MutationProposal<M::Mutation>) {
+        let MutationProposal { epoch, mutation } = proposal;
+        if epoch <= self.epoch {
+            debug!(
+                "Rejected proposal: stale epoch (machine epoch: {}, proposal epoch: {}",
+                self.epoch, proposal.epoch,
+            );
+            return;
+        }
+
+        assert_eq!(proposal.epoch, self.epoch + 1);
+        debug!(
+            "Applying mutation: {} (new epoch: {})",
+            mutation,
+            self.epoch + 1
+        );
         self.machine.apply_mutation(mutation);
         self.epoch += 1;
-        debug!("Applied mutation (new epoch: {})", self.epoch);
+
         while !self.request_queue.is_empty()
             && self.epoch >= self.request_queue.peek().unwrap().min_epoch
         {
@@ -162,7 +198,7 @@ impl<M: Machine> MachineService<M> {
         }
     }
 
-    fn handle_query_request(&mut self, request: MachineServiceRequest<M>) {
+    fn handle_query(&mut self, request: MachineServiceRequest<M>) {
         if self.epoch >= request.min_epoch {
             let status = self.machine.query_state(request.query);
             request.result.send(status).ok();
