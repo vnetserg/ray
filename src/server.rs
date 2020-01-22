@@ -148,19 +148,6 @@ fn run_psm<M: Machine, L: PersistentLog, S: SnapshotStorage>(
 
     let handle = MachineServiceHandle::new(log_sender, machine_sender.clone());
 
-    let log_batch_size = log_config.batch_size;
-    run_in_dedicated_thread("rayd-log", async move {
-        let mut log_service = LogService::<L, M>::new(
-            log,
-            machine_sender,
-            snapshot_sender,
-            log_receiver,
-            log_batch_size,
-        );
-        log_service.recover().await;
-        log_service.serve().await;
-    });
-
     let (machine, epoch) = match storage.open_last_snapshot() {
         Ok(Some(mut reader)) => {
             let (machine, epoch) = read_snapshot(&mut reader).unwrap_or_else(|err| {
@@ -170,11 +157,25 @@ fn run_psm<M: Machine, L: PersistentLog, S: SnapshotStorage>(
             (machine, epoch)
         }
         Ok(None) => {
-            info!("No snapshot found, starting fresh");
+            info!("No snapshots found, starting fresh");
             (M::default(), 0)
         }
         Err(err) => panic!("Failed to open latest snapshot: {}", err),
     };
+
+    let log_batch_size = log_config.batch_size;
+    run_in_dedicated_thread("rayd-log", async move {
+        let mut log_service = LogService::<L, M>::new(
+            log,
+            machine_sender,
+            snapshot_sender,
+            log_receiver,
+            log_batch_size,
+            epoch,
+        );
+        log_service.recover().await;
+        log_service.serve().await;
+    });
 
     let snapshot_machine = machine.clone();
     let snapshot_interval = snapshot_config.snapshot_interval;

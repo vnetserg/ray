@@ -45,6 +45,7 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
         snapshot_sender: mpsc::UnboundedSender<MutationProposal<M::Mutation>>,
         request_receiver: mpsc::Receiver<LogServiceRequest<M::Mutation>>,
         batch_size: usize,
+        epoch: u64,
     ) -> Self {
         Self {
             log,
@@ -52,28 +53,48 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
             snapshot_sender,
             request_receiver,
             batch_size,
-            persisted_epoch: 0,
+            persisted_epoch: epoch,
         }
     }
 
     pub async fn recover(&mut self) {
         let mut mutation_count = 0;
+        let mut last_epoch = None;
         while let Some((mutation, epoch)) = self.read_mutation() {
-            if self.persisted_epoch > 0 && epoch != self.persisted_epoch + 1 {
+            if last_epoch.as_ref().map(|last| last + 1 != epoch).unwrap_or(false) {
                 panic!(
                     "Missing mutation(s): expected epoch {}, got {}",
-                    self.persisted_epoch + 1,
+                    last_epoch.unwrap() + 1,
                     epoch
                 );
             }
 
-            self.persisted_epoch = epoch;
-            self.send_proposal(mutation, epoch).await;
+            last_epoch = Some(epoch);
+
+            if epoch == self.persisted_epoch + 1 {
+                self.persisted_epoch = epoch;
+                self.send_proposal(mutation, epoch).await;
+            } else if epoch > self.persisted_epoch {
+                panic!(
+                    "Missing mutation(s): persistent epoch {}, got epoch {}",
+                    self.persisted_epoch,
+                    epoch
+                );
+            }
 
             mutation_count += 1;
         }
+        
+        let last_epoch = last_epoch.unwrap_or(0);
+        if last_epoch != self.persisted_epoch {
+            panic!(
+                "Missing mutation(s): persistent epoch {}, got mutations only up to epoch {}",
+                self.persisted_epoch,
+                last_epoch
+            );
+        }
 
-        if self.persisted_epoch > 0 {
+        if mutation_count > 0 {
             info!(
                 "Recovered {} mutations from log (persisted epoch: {})",
                 mutation_count, self.persisted_epoch

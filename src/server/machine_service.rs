@@ -172,14 +172,6 @@ impl<M: Machine> MachineService<M> {
     }
 
     async fn handle_proposal(&mut self, mutation: M::Mutation, epoch: u64) {
-        if epoch <= self.epoch {
-            debug!(
-                "Rejected proposal: stale epoch (machine epoch: {}, proposal epoch: {}",
-                self.epoch, epoch,
-            );
-            return;
-        }
-
         assert_eq!(epoch, self.epoch + 1);
         debug!(
             "Applying mutation: {} (new epoch: {})",
