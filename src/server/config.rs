@@ -7,6 +7,7 @@ pub struct Config {
     pub rpc: RpcConfig,
     pub psm: PsmConfig,
     pub mutation_log: MutationLogConfig,
+    pub snapshot_storage: SnapshotStorageConfig,
     pub logging: Vec<LoggingConfig>,
 }
 
@@ -16,6 +17,7 @@ impl Default for Config {
             rpc: RpcConfig::default(),
             psm: PsmConfig::default(),
             mutation_log: MutationLogConfig::default(),
+            snapshot_storage: SnapshotStorageConfig::default(),
             logging: vec![LoggingConfig {
                 target: LoggingTarget::Stderr,
                 level: LogLevel::Info,
@@ -108,6 +110,20 @@ impl Default for MutationLogConfig {
     fn default() -> Self {
         Self {
             path: String::from("./rayd-log.bin"),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SnapshotStorageConfig {
+    pub path: String,
+}
+
+impl Default for SnapshotStorageConfig {
+    fn default() -> Self {
+        Self {
+            path: String::from("./snapshots"),
         }
     }
 }

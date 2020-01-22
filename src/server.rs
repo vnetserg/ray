@@ -52,13 +52,14 @@ pub fn serve_forever(config: Config) -> ! {
         exit(1);
     });
 
-    let snapshot_storage = DirectorySnapshotStorage::new("./snapshots").unwrap_or_else(|err| {
-        error!(
-            "Failed to initialize snapshot storage '{}': {}",
-            "./snapshots", err,
-        );
-        exit(1);
-    });
+    let snapshot_storage = DirectorySnapshotStorage::new(&config.snapshot_storage.path)
+        .unwrap_or_else(|err| {
+            error!(
+                "Failed to initialize snapshot storage '{}': {}",
+                config.snapshot_storage.path, err,
+            );
+            exit(1);
+        });
 
     let handle = run_psm(log, snapshot_storage, &config.psm);
     let storage_service = RayStorageService::new(handle);

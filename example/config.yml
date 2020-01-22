@@ -17,6 +17,9 @@ psm:
 mutation_log:
     path: ./rayd-log.bin
 
+snapshot_storage:
+    path: ./snapshots
+
 logging:
     - target:
         type: file
