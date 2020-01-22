@@ -13,9 +13,11 @@ use futures::{
     stream::StreamExt,
 };
 
-use std::io::{self, Read, Write};
+use std::io;
 
-pub trait PersistentLog: Read + Write + Send + 'static {
+pub trait PersistentLog: Send + 'static {
+    fn read_blob(&mut self) -> io::Result<Option<Vec<u8>>>;
+    fn append_blob(&mut self, blob: &[u8]) -> io::Result<()>;
     fn persist(&mut self) -> io::Result<()>;
 }
 
@@ -56,7 +58,7 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
 
     pub async fn recover(&mut self) {
         let mut mutation_count = 0;
-        while let Some((epoch, len)) = self.read_header() {
+        while let Some((mutation, epoch)) = self.read_mutation() {
             if self.persisted_epoch > 0 && epoch != self.persisted_epoch + 1 {
                 panic!(
                     "Missing mutation(s): expected epoch {}, got {}",
@@ -64,9 +66,8 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
                     epoch
                 );
             }
-            self.persisted_epoch = epoch;
 
-            let mutation = self.read_mutation(len as usize);
+            self.persisted_epoch = epoch;
             self.send_proposal(mutation, epoch).await;
 
             mutation_count += 1;
@@ -80,33 +81,30 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
         }
     }
 
-    fn read_header(&mut self) -> Option<(u64, usize)> {
-        let mut buffer = [0u8; 12];
-        if let Err(err) = self.log.read_exact(&mut buffer[..1]) {
-            if err.kind() == io::ErrorKind::UnexpectedEof {
-                return None;
-            } else {
-                panic!("Failed to read PersistentLog: {}", err);
-            }
-        }
-        if let Err(err) = self.log.read_exact(&mut buffer[1..]) {
-            panic!("Failed to read PersistentLog: {}", err);
+    fn read_mutation(&mut self) -> Option<(M::Mutation, u64)> {
+        let blob = self.log.read_blob().unwrap_or_else(|err| {
+            panic!("Failed to read persistent log: {}", err);
+        })?;
+        if blob.len() < 9 {
+            panic!("Persistent log blob is too short: expected at least 9 bytes, got {}", blob.len());
         }
 
-        let mut reader = &buffer[..];
-        let epoch = reader.read_u64::<LittleEndian>().unwrap();
-        let len = reader.read_u32::<LittleEndian>().unwrap();
+        let epoch = (&blob[..8]).read_u64::<LittleEndian>().unwrap();
+        let mutation = M::Mutation::decode(&blob[8..])
+            .unwrap_or_else(|err| panic!("Failed to decode mutation: {}", err));
 
-        Some((epoch, len as usize))
+        Some((mutation, epoch))
     }
 
-    fn read_mutation(&mut self, len: usize) -> M::Mutation {
-        let mut buf = vec![0; len];
+    fn write_mutation(&mut self, mutation: &M::Mutation, epoch: u64) {
+        let mut blob = vec![0u8; 8 + mutation.encoded_len()];
+        (&mut blob[..8]).write_u64::<LittleEndian>(epoch).unwrap();
+        mutation
+            .encode(&mut &mut blob[8..])
+            .unwrap_or_else(|err| panic!("Failed to encode mutation: {}", err));
         self.log
-            .read_exact(&mut buf)
-            .unwrap_or_else(|err| panic!("Failed to read mutation log: {}", err));
-        M::Mutation::decode(&buf[..])
-            .unwrap_or_else(|err| panic!("Failed to parse mutation: {}", err))
+            .append_blob(&blob)
+            .unwrap_or_else(|err| panic!("Failed to write to log: {}", err));
     }
 
     pub async fn send_proposal(&mut self, mutation: M::Mutation, epoch: u64) {
@@ -151,12 +149,7 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
             }
 
             for &(ref mutation, epoch) in proposals.iter() {
-                let len = mutation.encoded_len();
-                self.log
-                    .write_u64::<LittleEndian>(epoch)
-                    .and_then(|_| Ok(self.log.write_u32::<LittleEndian>(len as u32)?))
-                    .unwrap_or_else(|err| panic!("Failed to write to log: {}", err));
-                self.write_mutation(mutation, len);
+                self.write_mutation(mutation, epoch);
             }
 
             if !proposals.is_empty() {
@@ -179,22 +172,5 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
                 self.send_proposal(mutation, epoch).await;
             }
         }
-    }
-
-    fn write_mutation(&mut self, mutation: &M::Mutation, len: usize) {
-        let mut buf = Vec::with_capacity(len);
-        mutation
-            .encode(&mut buf)
-            .unwrap_or_else(|err| panic!("Failed to encode mutation: {}", err));
-        if buf.len() != len {
-            panic!(
-                "write_mutation len mismatch: expected {}, actual {}",
-                len,
-                buf.len()
-            );
-        }
-        self.log
-            .write_all(&buf)
-            .unwrap_or_else(|err| panic!("Failed to write to log: {}", err));
     }
 }
