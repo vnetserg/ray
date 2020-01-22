@@ -1,4 +1,7 @@
-use super::machine_service::{Machine, MachineServiceRequest};
+use super::{
+    machine_service::{Machine, MachineServiceRequest},
+    snapshot_service::MutationProposal,
+};
 
 use prost::Message;
 
@@ -27,6 +30,7 @@ pub enum LogServiceRequest<U: Message> {
 pub struct LogService<L: PersistentLog, M: Machine> {
     log: L,
     machine_sender: mpsc::Sender<MachineServiceRequest<M>>,
+    snapshot_sender: mpsc::UnboundedSender<MutationProposal<M::Mutation>>,
     request_receiver: mpsc::Receiver<LogServiceRequest<M::Mutation>>,
     batch_size: usize,
     persisted_epoch: u64,
@@ -36,12 +40,14 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
     pub fn new(
         log: L,
         machine_sender: mpsc::Sender<MachineServiceRequest<M>>,
+        snapshot_sender: mpsc::UnboundedSender<MutationProposal<M::Mutation>>,
         request_receiver: mpsc::Receiver<LogServiceRequest<M::Mutation>>,
         batch_size: usize,
     ) -> Self {
         Self {
             log,
             machine_sender,
+            snapshot_sender,
             request_receiver,
             batch_size,
             persisted_epoch: 0,
@@ -61,12 +67,7 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
             self.persisted_epoch = epoch;
 
             let mutation = self.read_mutation(len as usize);
-            let proposal = MachineServiceRequest::Proposal { mutation, epoch };
-
-            self.machine_sender
-                .send(proposal)
-                .await
-                .expect("proposal receiver dropped");
+            self.send_proposal(mutation, epoch).await;
 
             mutation_count += 1;
         }
@@ -103,9 +104,22 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
         let mut buf = vec![0; len];
         self.log
             .read_exact(&mut buf)
-            .unwrap_or_else(|err| panic!("Failed to read PersistentLog: {}", err));
+            .unwrap_or_else(|err| panic!("Failed to read mutation log: {}", err));
         M::Mutation::decode(&buf[..])
             .unwrap_or_else(|err| panic!("Failed to parse mutation: {}", err))
+    }
+
+    pub async fn send_proposal(&mut self, mutation: M::Mutation, epoch: u64) {
+        self.snapshot_sender
+            .unbounded_send(MutationProposal {
+                mutation: mutation.clone(),
+                epoch,
+            })
+            .expect("LogService snapshot_sender failed");
+        self.machine_sender
+            .send(MachineServiceRequest::Proposal { mutation, epoch })
+            .await
+            .expect("LogService machine_sender failed");
     }
 
     pub async fn serve(&mut self) {
@@ -115,18 +129,15 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
             let mut current_epoch = self.persisted_epoch;
 
             for i in 0..self.batch_size {
-                let request = if i == 0 {
-                    self.request_receiver
-                        .next()
-                        .await
-                        .expect("all request senders dropped")
+                let maybe_request = if i == 0 {
+                    self.request_receiver.next().await
                 } else {
                     match self.request_receiver.try_next() {
-                        Ok(Some(req)) => req,
-                        Ok(None) => panic!("PersistentLog request_receiver stream terminated"),
+                        Ok(mb_req) => mb_req,
                         Err(_) => break,
                     }
                 };
+                let request = maybe_request.expect("PersistentLog request_receiver failed");
                 match request {
                     LogServiceRequest::GetPersistedEpoch(response) => {
                         response.send(self.persisted_epoch).ok(); // Ignore error
@@ -165,10 +176,7 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
             }
 
             for (mutation, epoch) in proposals.into_iter() {
-                self.machine_sender
-                    .send(MachineServiceRequest::Proposal { mutation, epoch })
-                    .await
-                    .expect("PersistentLog proposal_sender failed");
+                self.send_proposal(mutation, epoch).await;
             }
         }
     }

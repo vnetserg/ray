@@ -1,8 +1,13 @@
 use crate::{proto, server::machine_service::Machine};
 
-use std::collections::HashMap;
+use prost::Message;
 
-#[derive(Default)]
+use std::{
+    collections::HashMap,
+    io::{self, Read, Write},
+};
+
+#[derive(Default, Clone)]
 pub struct StorageMachine {
     map: HashMap<Box<[u8]>, Box<[u8]>>,
 }
@@ -23,5 +28,27 @@ impl Machine for StorageMachine {
             .get(&query)
             .cloned()
             .unwrap_or_else(|| Vec::new().into_boxed_slice())
+    }
+
+    fn write_snapshot<T: Write>(&self, writer: &mut T) -> io::Result<()> {
+        for (key, value) in self.map.iter() {
+            let set = proto::SetRequest {
+                key: key.to_vec(),
+                value: value.to_vec(),
+            };
+
+            let len = set.encoded_len();
+            let mut buf = vec![0; len + 8];
+            set.encode_length_delimited(&mut buf)
+                .expect("Failed to encode proto message");
+
+            writer.write_all(&buf)?;
+        }
+
+        Ok(())
+    }
+
+    fn from_snapshot<T: Read>(_reader: &mut T) -> io::Result<Self> {
+        Ok(Self::default())
     }
 }

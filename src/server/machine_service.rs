@@ -12,15 +12,18 @@ use std::{
     cmp::{self, Ordering},
     collections::BinaryHeap,
     fmt::Display,
+    io::{self, Read, Write},
 };
 
-pub trait Machine: Default + Send + 'static {
-    type Mutation: Message + Default + Display;
+pub trait Machine: Default + Clone + Send + 'static {
+    type Mutation: Message + Default + Clone + Display;
     type Query: Send;
     type Status: Send;
 
     fn apply_mutation(&mut self, mutation: Self::Mutation);
     fn query_state(&self, query: Self::Query) -> Self::Status;
+    fn write_snapshot<T: Write>(&self, writer: &mut T) -> io::Result<()>;
+    fn from_snapshot<T: Read>(reader: &mut T) -> io::Result<Self>;
 }
 
 pub enum MachineServiceRequest<M: Machine> {
@@ -126,18 +129,22 @@ impl<M: Machine> cmp::Ord for QueryPqItem<M> {
 }
 
 pub struct MachineService<M: Machine> {
-    request_receiver: mpsc::Receiver<MachineServiceRequest<M>>,
     machine: M,
+    request_receiver: mpsc::Receiver<MachineServiceRequest<M>>,
     epoch: u64,
     query_queue: BinaryHeap<QueryPqItem<M>>,
 }
 
 impl<M: Machine> MachineService<M> {
-    pub fn new(request_receiver: mpsc::Receiver<MachineServiceRequest<M>>) -> Self {
+    pub fn new(
+        machine: M,
+        request_receiver: mpsc::Receiver<MachineServiceRequest<M>>,
+        epoch: u64,
+    ) -> Self {
         Self {
+            machine,
             request_receiver,
-            machine: M::default(),
-            epoch: 0,
+            epoch,
             query_queue: BinaryHeap::new(),
         }
     }
@@ -151,7 +158,7 @@ impl<M: Machine> MachineService<M> {
                 .expect("MachineService request_receiver failed")
             {
                 MachineServiceRequest::Proposal { mutation, epoch } => {
-                    self.handle_proposal(mutation, epoch);
+                    self.handle_proposal(mutation, epoch).await;
                 }
                 MachineServiceRequest::Query {
                     query,
@@ -164,7 +171,7 @@ impl<M: Machine> MachineService<M> {
         }
     }
 
-    fn handle_proposal(&mut self, mutation: M::Mutation, epoch: u64) {
+    async fn handle_proposal(&mut self, mutation: M::Mutation, epoch: u64) {
         if epoch <= self.epoch {
             debug!(
                 "Rejected proposal: stale epoch (machine epoch: {}, proposal epoch: {}",

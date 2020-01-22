@@ -47,6 +47,7 @@ impl Default for RpcConfig {
 pub struct PsmConfig {
     pub machine_service: MachineServiceConfig,
     pub log_service: LogServiceConfig,
+    pub snapshot_service: SnapshotServiceConfig,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -77,6 +78,22 @@ impl Default for LogServiceConfig {
         Self {
             request_queue_size: 10000,
             batch_size: 100,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SnapshotServiceConfig {
+    pub snapshot_interval: u64,
+    pub batch_size: usize,
+}
+
+impl Default for SnapshotServiceConfig {
+    fn default() -> Self {
+        Self {
+            snapshot_interval: 10000,
+            batch_size: 100_000,
         }
     }
 }

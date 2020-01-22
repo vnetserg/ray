@@ -1,20 +1,26 @@
 mod config;
+mod directory_snapshot_storage;
 mod file_mutation_log;
 mod log_service;
 mod machine_service;
 mod rpc;
+mod snapshot_service;
 mod storage_machine;
 
 pub use config::{Config, LoggingConfig, LoggingTarget};
 
 use super::proto::storage_server::StorageServer;
+
 use config::PsmConfig;
+use directory_snapshot_storage::DirectorySnapshotStorage;
 use file_mutation_log::FileMutationLog;
 use log_service::{LogService, PersistentLog};
 use machine_service::{Machine, MachineService, MachineServiceHandle};
 use rpc::RayStorageService;
+use snapshot_service::{read_snapshot, SnapshotService, SnapshotStorage};
 
 use futures::channel::mpsc;
+
 use tokio::runtime;
 use tonic::transport::Server;
 
@@ -46,10 +52,18 @@ pub fn serve_forever(config: Config) -> ! {
         exit(1);
     });
 
-    let handle = run_psm(log, &config.psm);
-    let storage = RayStorageService::new(handle);
+    let snapshot_storage = DirectorySnapshotStorage::new("./snapshots").unwrap_or_else(|err| {
+        error!(
+            "Failed to initialize snapshot storage '{}': {}",
+            "./snapshots", err,
+        );
+        exit(1);
+    });
+
+    let handle = run_psm(log, snapshot_storage, &config.psm);
+    let storage_service = RayStorageService::new(handle);
     let server = Server::builder()
-        .add_service(StorageServer::new(storage))
+        .add_service(StorageServer::new(storage_service))
         .serve(socket_address);
 
     let num_threads = if config.rpc.threads > 0 {
@@ -118,24 +132,66 @@ fn init_logging(configs: &[LoggingConfig]) {
     log_panics::init();
 }
 
-fn run_psm<M: Machine, L: PersistentLog>(log: L, config: &PsmConfig) -> MachineServiceHandle<M> {
+fn run_psm<M: Machine, L: PersistentLog, S: SnapshotStorage>(
+    log: L,
+    storage: S,
+    config: &PsmConfig,
+) -> MachineServiceHandle<M> {
     let log_config = &config.log_service;
     let machine_config = &config.machine_service;
+    let snapshot_config = &config.snapshot_service;
 
     let (log_sender, log_receiver) = mpsc::channel(log_config.request_queue_size);
     let (machine_sender, machine_receiver) = mpsc::channel(machine_config.request_queue_size);
+    let (snapshot_sender, snapshot_receiver) = mpsc::unbounded();
+
     let handle = MachineServiceHandle::new(log_sender, machine_sender.clone());
 
     let log_batch_size = log_config.batch_size;
     run_in_dedicated_thread("rayd-log", async move {
-        let mut log_service =
-            LogService::<L, M>::new(log, machine_sender, log_receiver, log_batch_size);
+        let mut log_service = LogService::<L, M>::new(
+            log,
+            machine_sender,
+            snapshot_sender,
+            log_receiver,
+            log_batch_size,
+        );
         log_service.recover().await;
         log_service.serve().await;
     });
 
+    let (machine, epoch) = match storage.open_last_snapshot() {
+        Ok(Some(mut reader)) => {
+            let (machine, epoch) = read_snapshot(&mut reader).unwrap_or_else(|err| {
+                panic!("Failed to recover machine from snapshot: {}", err);
+            });
+            info!("Recovered state from snapshot (epoch: {})", epoch);
+            (machine, epoch)
+        }
+        Ok(None) => {
+            info!("No snapshot found, starting fresh");
+            (M::default(), 0)
+        }
+        Err(err) => panic!("Failed to open latest snapshot: {}", err),
+    };
+
+    let snapshot_machine = machine.clone();
+    let snapshot_interval = snapshot_config.snapshot_interval;
+    let snapshot_batch_size = snapshot_config.batch_size;
+    run_in_dedicated_thread("rayd-snapshot", async move {
+        let mut snapshot_service = SnapshotService::<S, M>::new(
+            storage,
+            snapshot_machine,
+            snapshot_receiver,
+            epoch,
+            snapshot_interval,
+            snapshot_batch_size,
+        );
+        snapshot_service.serve().await;
+    });
+
     run_in_dedicated_thread("rayd-machine", async move {
-        let mut machine_service = MachineService::new(machine_receiver);
+        let mut machine_service = MachineService::new(machine, machine_receiver, epoch);
         machine_service.serve().await;
     });
 

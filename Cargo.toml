@@ -18,7 +18,9 @@ byte_string = "1.0"
 bytes = "0.4"
 byteorder = "1.3"
 clap = "2.33"
+chrono = "0.4"
 futures = "0.3"
+libc = "0.2"
 log = "0.4"
 log-panics = { version = "2.0", features = ["with-backtrace"] }
 num_cpus = "1.11"
@@ -26,7 +28,7 @@ prost = "0.6"
 simplelog = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.8"
-tokio = { version = "0.2", features = ["macros", "rt-threaded"] }
+tokio = { version = "0.2", features = ["macros", "rt-threaded", "blocking"] }
 tonic = "0.1.0"
 
 [build-dependencies]
