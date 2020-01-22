@@ -61,7 +61,11 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
         let mut mutation_count = 0;
         let mut last_epoch = None;
         while let Some((mutation, epoch)) = self.read_mutation() {
-            if last_epoch.as_ref().map(|last| last + 1 != epoch).unwrap_or(false) {
+            if last_epoch
+                .as_ref()
+                .map(|last| last + 1 != epoch)
+                .unwrap_or(false)
+            {
                 panic!(
                     "Missing mutation(s): expected epoch {}, got {}",
                     last_epoch.unwrap() + 1,
@@ -77,20 +81,18 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
             } else if epoch > self.persisted_epoch {
                 panic!(
                     "Missing mutation(s): persistent epoch {}, got epoch {}",
-                    self.persisted_epoch,
-                    epoch
+                    self.persisted_epoch, epoch
                 );
             }
 
             mutation_count += 1;
         }
-        
+
         let last_epoch = last_epoch.unwrap_or(0);
         if last_epoch != self.persisted_epoch {
             panic!(
                 "Missing mutation(s): persistent epoch {}, got mutations only up to epoch {}",
-                self.persisted_epoch,
-                last_epoch
+                self.persisted_epoch, last_epoch
             );
         }
 
@@ -107,7 +109,10 @@ impl<L: PersistentLog, M: Machine> LogService<L, M> {
             panic!("Failed to read persistent log: {}", err);
         })?;
         if blob.len() < 9 {
-            panic!("Persistent log blob is too short: expected at least 9 bytes, got {}", blob.len());
+            panic!(
+                "Persistent log blob is too short: expected at least 9 bytes, got {}",
+                blob.len()
+            );
         }
 
         let epoch = (&blob[..8]).read_u64::<LittleEndian>().unwrap();

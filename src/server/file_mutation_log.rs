@@ -70,7 +70,8 @@ impl PersistentLog for FileMutationLog {
 
     fn append_blob(&mut self, blob: &[u8]) -> io::Result<()> {
         let writer = self.get_writer();
-        writer.write_u32::<LittleEndian>(blob.len() as u32)
+        writer
+            .write_u32::<LittleEndian>(blob.len() as u32)
             .and_then(|_| writer.write_all(blob))
     }
 
