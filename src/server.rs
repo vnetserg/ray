@@ -13,8 +13,8 @@ use super::proto::storage_server::StorageServer;
 
 use config::PsmConfig;
 use directory_snapshot_storage::DirectorySnapshotStorage;
-use file_mutation_log::FileMutationLog;
-use log_service::{LogService, PersistentLog};
+use file_mutation_log::FileMutationLogReader;
+use log_service::{LogService, PersistentLogReader};
 use machine_service::{Machine, MachineService, MachineServiceHandle};
 use rpc::RayStorageService;
 use snapshot_service::{read_snapshot, SnapshotService, SnapshotStorage};
@@ -47,7 +47,7 @@ pub fn serve_forever(config: Config) -> ! {
     });
     let socket_address = SocketAddr::new(ip_address, config.rpc.port);
 
-    let log = FileMutationLog::new(&config.mutation_log).unwrap_or_else(|err| {
+    let log = FileMutationLogReader::new(&config.mutation_log).unwrap_or_else(|err| {
         error!("Failed to open '{}': {}", &config.mutation_log.path, err);
         exit(1);
     });
@@ -133,7 +133,7 @@ fn init_logging(configs: &[LoggingConfig]) {
     log_panics::init();
 }
 
-fn run_psm<M: Machine, L: PersistentLog, S: SnapshotStorage>(
+fn run_psm<M: Machine, L: PersistentLogReader, S: SnapshotStorage>(
     log: L,
     storage: S,
     config: &PsmConfig,
@@ -165,15 +165,15 @@ fn run_psm<M: Machine, L: PersistentLog, S: SnapshotStorage>(
 
     let log_batch_size = log_config.batch_size;
     run_in_dedicated_thread("rayd-log", async move {
-        let mut log_service = LogService::<L, M>::new(
+        let mut log_service = LogService::<L, M>::recover(
             log,
             machine_sender,
             snapshot_sender,
             log_receiver,
             log_batch_size,
             epoch,
-        );
-        log_service.recover().await;
+        )
+        .await;
         log_service.serve().await;
     });
 
