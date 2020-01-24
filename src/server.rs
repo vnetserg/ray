@@ -14,7 +14,7 @@ use super::proto::storage_server::StorageServer;
 use config::PsmConfig;
 use directory_snapshot_storage::DirectorySnapshotStorage;
 use file_mutation_log::FileMutationLogReader;
-use log_service::{LogService, PersistentLogReader};
+use log_service::{LogServiceRestorer, PersistentLogReader};
 use machine_service::{Machine, MachineService, MachineServiceHandle};
 use rpc::RayStorageService;
 use snapshot_service::{read_snapshot, SnapshotService, SnapshotStorage};
@@ -133,8 +133,8 @@ fn init_logging(configs: &[LoggingConfig]) {
     log_panics::init();
 }
 
-fn run_psm<M: Machine, L: PersistentLogReader, S: SnapshotStorage>(
-    log: L,
+fn run_psm<M: Machine, R: PersistentLogReader, S: SnapshotStorage>(
+    log_reader: R,
     storage: S,
     config: &PsmConfig,
 ) -> MachineServiceHandle<M> {
@@ -165,15 +165,15 @@ fn run_psm<M: Machine, L: PersistentLogReader, S: SnapshotStorage>(
 
     let log_batch_size = log_config.batch_size;
     run_in_dedicated_thread("rayd-log", async move {
-        let mut log_service = LogService::<L, M>::recover(
-            log,
+        let restorer = LogServiceRestorer::<R, M>::new(
+            log_reader,
             machine_sender,
             snapshot_sender,
             log_receiver,
             log_batch_size,
             epoch,
-        )
-        .await;
+        );
+        let mut log_service = restorer.restore().await;
         log_service.serve().await;
     });
 

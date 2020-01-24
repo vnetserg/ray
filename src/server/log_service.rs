@@ -39,102 +39,136 @@ pub enum LogServiceRequest<U: Message> {
     GetPersistedEpoch(oneshot::Sender<u64>),
 }
 
-pub struct LogService<L: PersistentLogReader, M: Machine> {
-    writer: L::Writer,
+struct LogServiceBase<M: Machine> {
     machine_sender: mpsc::Sender<MachineServiceRequest<M>>,
     snapshot_sender: mpsc::UnboundedSender<MutationProposal<M::Mutation>>,
     request_receiver: mpsc::Receiver<LogServiceRequest<M::Mutation>>,
     batch_size: usize,
-    persisted_epoch: u64,
 }
 
-impl<L: PersistentLogReader, M: Machine> LogService<L, M> {
-    pub async fn recover(
-        reader: L,
-        mut machine_sender: mpsc::Sender<MachineServiceRequest<M>>,
-        mut snapshot_sender: mpsc::UnboundedSender<MutationProposal<M::Mutation>>,
+impl<M: Machine> LogServiceBase<M> {
+    async fn send_proposal(&mut self, mutation: M::Mutation, epoch: u64) {
+        self.snapshot_sender
+            .unbounded_send(MutationProposal {
+                mutation: mutation.clone(),
+                epoch,
+            })
+            .expect("LogService snapshot_sender failed");
+        self.machine_sender
+            .send(MachineServiceRequest::Proposal { mutation, epoch })
+            .await
+            .expect("LogService machine_sender failed");
+    }
+
+    async fn serve_batch(
+        &mut self,
+        persisted_epoch: u64,
+    ) -> (Vec<M::Mutation>, Vec<oneshot::Sender<()>>) {
+        let mut mutations = vec![];
+        let mut notifiers = vec![];
+
+        for i in 0..self.batch_size {
+            let maybe_request = if i == 0 {
+                self.request_receiver.next().await
+            } else {
+                match self.request_receiver.try_next() {
+                    Ok(mb_req) => mb_req,
+                    Err(_) => break,
+                }
+            };
+            let request = maybe_request.expect("PersistentLog request_receiver failed");
+            match request {
+                LogServiceRequest::GetPersistedEpoch(response) => {
+                    response.send(persisted_epoch).ok(); // Ignore error
+                }
+                LogServiceRequest::PersistMutation { mutation, notify } => {
+                    mutations.push(mutation);
+                    notifiers.push(notify);
+                }
+            }
+        }
+
+        (mutations, notifiers)
+    }
+}
+
+pub struct LogServiceRestorer<R: PersistentLogReader, M: Machine> {
+    reader: R,
+    snapshot_epoch: u64,
+    base: LogServiceBase<M>,
+}
+
+impl<R: PersistentLogReader, M: Machine> LogServiceRestorer<R, M> {
+    pub fn new(
+        reader: R,
+        machine_sender: mpsc::Sender<MachineServiceRequest<M>>,
+        snapshot_sender: mpsc::UnboundedSender<MutationProposal<M::Mutation>>,
         request_receiver: mpsc::Receiver<LogServiceRequest<M::Mutation>>,
         batch_size: usize,
         snapshot_epoch: u64,
     ) -> Self {
-        let mut persisted_epoch = snapshot_epoch;
-        let mut proposals = vec![];
+        let base = LogServiceBase {
+            machine_sender,
+            snapshot_sender,
+            request_receiver,
+            batch_size,
+        };
+        Self {
+            reader,
+            snapshot_epoch,
+            base,
+        }
+    }
+
+    pub async fn restore(mut self) -> LogService<R::Writer, M> {
         let mut mutation_count = 0usize;
         let mut last_epoch = None;
 
-        let writer = Self::reader_into_writer(reader, |blob| {
-            let (mutation, epoch) = Self::decode_blob(blob);
+        let mut maybe_reader = Some(self.reader);
+        let mut maybe_writer = None;
 
-            if last_epoch
-                .as_ref()
-                .map(|last| last + 1 != epoch)
-                .unwrap_or(false)
-            {
-                panic!(
-                    "Missing mutation(s): expected epoch {}, got {}",
-                    last_epoch.unwrap() + 1,
-                    epoch
-                );
-            }
+        while let Some(reader) = maybe_reader {
+            maybe_reader = match reader.read_blob() {
+                Ok(ReadResult::Blob(data, reader)) => {
+                    let (mutation, epoch) = Self::decode_blob(data);
+                    Self::validate_blob_epoch(epoch, self.snapshot_epoch, last_epoch);
 
-            if epoch > persisted_epoch + 1 {
-                panic!(
-                    "Missing mutation(s): persisted epoch {}, got epoch {}",
-                    persisted_epoch, epoch
-                );
-            }
+                    if epoch > self.snapshot_epoch {
+                        self.base.send_proposal(mutation, epoch).await;
+                    }
 
-            last_epoch = Some(epoch);
-            mutation_count += 1;
-            persisted_epoch = epoch;
-            proposals.push((mutation, epoch));
-        });
+                    last_epoch = Some(epoch);
+                    mutation_count += 1;
 
-        let last_epoch = last_epoch.unwrap_or(0);
-        if last_epoch != persisted_epoch {
-            panic!(
-                "Missing mutation(s): snapshot epoch {}, got mutations only up to epoch {}",
-                persisted_epoch, last_epoch
-            );
+                    Some(reader)
+                }
+                Ok(ReadResult::End(writer)) => {
+                    maybe_writer = Some(writer);
+                    None
+                }
+                Err(err) => panic!("Failed to read blob: {}", err),
+            };
         }
 
-        for (mutation, epoch) in proposals.into_iter() {
-            if epoch > snapshot_epoch {
-                Self::send_proposal(mutation, epoch, &mut machine_sender, &mut snapshot_sender)
-                    .await;
-            }
+        let last_epoch = last_epoch.unwrap_or(0);
+        if last_epoch < self.snapshot_epoch {
+            panic!(
+                "Missing mutation(s): snapshot epoch {}, got mutations only up to epoch {}",
+                self.snapshot_epoch, last_epoch
+            );
         }
 
         if mutation_count > 0 {
             info!(
                 "Recovered {} mutations from log (persisted epoch: {})",
-                mutation_count, persisted_epoch
+                mutation_count, last_epoch
             );
         }
 
-        Self {
-            writer,
-            machine_sender,
-            snapshot_sender,
-            request_receiver,
-            batch_size,
-            persisted_epoch,
-        }
-    }
-
-    fn reader_into_writer<F>(mut reader: L, mut callback: F) -> L::Writer
-    where
-        F: FnMut(Vec<u8>),
-    {
-        loop {
-            reader = match reader.read_blob() {
-                Ok(ReadResult::Blob(data, reader)) => {
-                    callback(data);
-                    reader
-                }
-                Ok(ReadResult::End(writer)) => return writer,
-                Err(err) => panic!("Failed to read blob: {}", err),
-            }
+        LogService {
+            writer: maybe_writer.unwrap(),
+            persisted_epoch: last_epoch,
+            base: self.base,
         }
     }
 
@@ -153,24 +187,36 @@ impl<L: PersistentLogReader, M: Machine> LogService<L, M> {
         (mutation, epoch)
     }
 
-    async fn send_proposal(
-        mutation: M::Mutation,
-        epoch: u64,
-        machine_sender: &mut mpsc::Sender<MachineServiceRequest<M>>,
-        snapshot_sender: &mut mpsc::UnboundedSender<MutationProposal<M::Mutation>>,
-    ) {
-        snapshot_sender
-            .unbounded_send(MutationProposal {
-                mutation: mutation.clone(),
-                epoch,
-            })
-            .expect("LogService snapshot_sender failed");
-        machine_sender
-            .send(MachineServiceRequest::Proposal { mutation, epoch })
-            .await
-            .expect("LogService machine_sender failed");
-    }
+    fn validate_blob_epoch(epoch: u64, snapshot_epoch: u64, last_epoch: Option<u64>) {
+        if last_epoch
+            .as_ref()
+            .map(|last| last + 1 != epoch)
+            .unwrap_or(false)
+        {
+            panic!(
+                "Missing mutation(s): expected epoch {}, got {}",
+                last_epoch.unwrap() + 1,
+                epoch
+            );
+        }
 
+        if last_epoch.is_none() && epoch > snapshot_epoch + 1 {
+            panic!(
+                "Missing mutation(s): expected epoch {}, got epoch {}",
+                snapshot_epoch + 1,
+                epoch
+            );
+        }
+    }
+}
+
+pub struct LogService<W: PersistentLogWriter, M: Machine> {
+    writer: W,
+    persisted_epoch: u64,
+    base: LogServiceBase<M>,
+}
+
+impl<W: PersistentLogWriter, M: Machine> LogService<W, M> {
     fn write_mutation(&mut self, mutation: &M::Mutation, epoch: u64) {
         let mut blob = vec![0u8; 8 + mutation.encoded_len()];
         (&mut blob[..8]).write_u64::<LittleEndian>(epoch).unwrap();
@@ -184,61 +230,39 @@ impl<L: PersistentLogReader, M: Machine> LogService<L, M> {
 
     pub async fn serve(&mut self) {
         loop {
-            let mut proposals = vec![];
-            let mut notifiers = vec![];
-            let mut current_epoch = self.persisted_epoch;
+            let (mutations, notifiers) = self.base.serve_batch(self.persisted_epoch).await;
 
-            for i in 0..self.batch_size {
-                let maybe_request = if i == 0 {
-                    self.request_receiver.next().await
-                } else {
-                    match self.request_receiver.try_next() {
-                        Ok(mb_req) => mb_req,
-                        Err(_) => break,
-                    }
-                };
-                let request = maybe_request.expect("PersistentLog request_receiver failed");
-                match request {
-                    LogServiceRequest::GetPersistedEpoch(response) => {
-                        response.send(self.persisted_epoch).ok(); // Ignore error
-                    }
-                    LogServiceRequest::PersistMutation { mutation, notify } => {
-                        current_epoch += 1;
-                        proposals.push((mutation, current_epoch));
-                        notifiers.push(notify);
-                    }
-                }
+            if mutations.is_empty() {
+                continue;
             }
 
-            for &(ref mutation, epoch) in proposals.iter() {
-                self.write_mutation(mutation, epoch);
+            let proposals: Vec<_> = mutations
+                .into_iter()
+                .enumerate()
+                .map(|(index, mutation)| (mutation, self.persisted_epoch + 1 + index as u64))
+                .collect();
+
+            for (mutation, epoch) in proposals.iter() {
+                self.write_mutation(mutation, *epoch);
             }
 
-            if !proposals.is_empty() {
-                self.writer
-                    .persist()
-                    .unwrap_or_else(|err| panic!("Failed to persist log: {}", err));
-                self.persisted_epoch += proposals.len() as u64;
+            self.writer
+                .persist()
+                .unwrap_or_else(|err| panic!("Failed to persist log: {}", err));
+            self.persisted_epoch += proposals.len() as u64;
 
-                debug!(
-                    "Wrote {} mutations to log (persisted epoch: {})",
-                    proposals.len(),
-                    self.persisted_epoch,
-                );
-            }
+            debug!(
+                "Wrote {} mutations to log (persisted epoch: {})",
+                proposals.len(),
+                self.persisted_epoch,
+            );
 
             for notify in notifiers.into_iter() {
                 notify.send(()).ok(); // Ignore error
             }
 
             for (mutation, epoch) in proposals.into_iter() {
-                Self::send_proposal(
-                    mutation,
-                    epoch,
-                    &mut self.machine_sender,
-                    &mut self.snapshot_sender,
-                )
-                .await;
+                self.base.send_proposal(mutation, epoch).await;
             }
         }
     }
