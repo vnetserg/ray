@@ -49,6 +49,7 @@ impl Machine for StorageMachine {
     }
 
     fn from_snapshot<T: Read>(_reader: &mut T) -> io::Result<Self> {
+        // TODO
         Ok(Self::default())
     }
 }

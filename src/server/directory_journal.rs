@@ -140,4 +140,14 @@ impl JournalWriter for DirectoryJournalWriter {
         }
         Ok(())
     }
+
+    fn get_blob_count(&self) -> usize {
+        // TODO
+        1
+    }
+
+    fn dispose_oldest_blobs(&mut self, _blob_count: usize) -> io::Result<()> {
+        // TODO
+        Ok(())
+    }
 }

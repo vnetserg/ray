@@ -48,9 +48,12 @@ impl SnapshotStorage for DirectorySnapshotStorage {
     fn create_snapshot(&mut self, name: &str) -> io::Result<Self::Writer> {
         let file_name = format!("{}_{}.snap", Utc::now().format("%+"), name);
         let path = Path::new(&self.path).join(file_name);
+        debug!("Creating snapshot file: {:?}", path);
+
         let file = OpenOptions::new().write(true).create_new(true).open(path)?;
         let buffer = BufWriter::new(file);
         let writer = SnapshotWriter { buffer };
+
         Ok(writer)
     }
 
@@ -66,6 +69,7 @@ impl SnapshotStorage for DirectorySnapshotStorage {
             }
         }
         if let Some(path) = latest {
+            debug!("Latest snapshot found: {:?}", path);
             let file = OpenOptions::new().read(true).open(path)?;
             let reader = BufReader::new(file);
             Ok(Some(reader))

@@ -74,13 +74,13 @@ impl<M: Machine> MachineServiceHandle<M> {
     }
 
     async fn get_persisted_epoch(&mut self) -> u64 {
-        let (sender, receiver) = oneshot::channel();
-        let request = JournalServiceRequest::GetPersistedEpoch(sender);
+        let (epoch_sender, epoch_receiver) = oneshot::channel();
+        let request = JournalServiceRequest::GetPersistedEpoch { epoch_sender };
         self.journal_sender
             .send(request)
             .await
             .expect("MachinsServiceHandle journal_sender failed");
-        receiver.await.expect("sender dropped")
+        epoch_receiver.await.expect("sender dropped")
     }
 
     async fn query_state_after(&mut self, query: M::Query, epoch: u64) -> M::Status {

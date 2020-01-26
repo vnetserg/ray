@@ -9,6 +9,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use futures::{
     channel::{mpsc, oneshot},
+    select,
     sink::SinkExt,
     stream::StreamExt,
 };
@@ -29,6 +30,8 @@ pub trait JournalReader: Sized + Send + 'static {
 pub trait JournalWriter: Send + 'static {
     fn append_blob(&mut self, blob: &[u8]) -> io::Result<()>;
     fn persist(&mut self) -> io::Result<()>;
+    fn get_blob_count(&self) -> usize;
+    fn dispose_oldest_blobs(&mut self, blob_count: usize) -> io::Result<()>;
 }
 
 pub enum JournalServiceRequest<U: Message> {
@@ -36,13 +39,22 @@ pub enum JournalServiceRequest<U: Message> {
         mutation: U,
         notify: oneshot::Sender<()>,
     },
-    GetPersistedEpoch(oneshot::Sender<u64>),
+    GetPersistedEpoch {
+        epoch_sender: oneshot::Sender<u64>,
+    },
+}
+
+struct BatchResult<U> {
+    mutations: Vec<U>,
+    notifiers: Vec<oneshot::Sender<()>>,
+    min_epoch: Option<u64>,
 }
 
 struct JournalServiceBase<M: Machine> {
     machine_sender: mpsc::Sender<MachineServiceRequest<M>>,
     snapshot_sender: mpsc::UnboundedSender<MutationProposal<M::Mutation>>,
     request_receiver: mpsc::Receiver<JournalServiceRequest<M::Mutation>>,
+    min_epoch_receiver: mpsc::UnboundedReceiver<u64>,
     batch_size: usize,
 }
 
@@ -60,31 +72,59 @@ impl<M: Machine> JournalServiceBase<M> {
             .expect("JournalService machine_sender failed");
     }
 
-    async fn serve_batch(
+    async fn serve_batch(&mut self, persisted_epoch: u64) -> BatchResult<M::Mutation> {
+        select! {
+            maybe_min_epoch = self.min_epoch_receiver.next() => {
+                let min_epoch = maybe_min_epoch.expect("JournalService min_epoch_receiver failed");
+                return BatchResult {
+                    mutations: vec![],
+                    notifiers: vec![],
+                    min_epoch: Some(min_epoch),
+                }
+            },
+            maybe_request = self.request_receiver.next() => {
+                let request = maybe_request.expect("JournalService request_receiver failed");
+                let (mutations, notifiers) = self.process_request_batch(request, persisted_epoch);
+                return BatchResult {
+                    mutations,
+                    notifiers,
+                    min_epoch: None,
+                }
+            },
+        }
+    }
+
+    fn process_request_batch(
         &mut self,
+        first: JournalServiceRequest<M::Mutation>,
         persisted_epoch: u64,
     ) -> (Vec<M::Mutation>, Vec<oneshot::Sender<()>>) {
         let mut mutations = vec![];
         let mut notifiers = vec![];
+        let mut request = first;
+        let mut processed_requests = 0;
 
-        for i in 0..self.batch_size {
-            let maybe_request = if i == 0 {
-                self.request_receiver.next().await
-            } else {
-                match self.request_receiver.try_next() {
-                    Ok(mb_req) => mb_req,
-                    Err(_) => break,
-                }
-            };
-            let request = maybe_request.expect("JournalService request_receiver failed");
+        loop {
             match request {
-                JournalServiceRequest::GetPersistedEpoch(response) => {
-                    response.send(persisted_epoch).ok(); // Ignore error
+                JournalServiceRequest::GetPersistedEpoch { epoch_sender } => {
+                    epoch_sender.send(persisted_epoch).ok(); // Ignore error
                 }
                 JournalServiceRequest::PersistMutation { mutation, notify } => {
                     mutations.push(mutation);
                     notifiers.push(notify);
                 }
+            }
+            processed_requests += 1;
+
+            if processed_requests < self.batch_size {
+                match self.request_receiver.try_next() {
+                    Ok(maybe_request) => {
+                        request = maybe_request.expect("JournalService request_receiver failed");
+                    }
+                    Err(_) => break,
+                }
+            } else {
+                break;
             }
         }
 
@@ -104,6 +144,7 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
         machine_sender: mpsc::Sender<MachineServiceRequest<M>>,
         snapshot_sender: mpsc::UnboundedSender<MutationProposal<M::Mutation>>,
         request_receiver: mpsc::Receiver<JournalServiceRequest<M::Mutation>>,
+        min_epoch_receiver: mpsc::UnboundedReceiver<u64>,
         batch_size: usize,
         snapshot_epoch: u64,
     ) -> Self {
@@ -111,6 +152,7 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
             machine_sender,
             snapshot_sender,
             request_receiver,
+            min_epoch_receiver,
             batch_size,
         };
         Self {
@@ -230,7 +272,15 @@ impl<W: JournalWriter, M: Machine> JournalService<W, M> {
 
     pub async fn serve(&mut self) {
         loop {
-            let (mutations, notifiers) = self.base.serve_batch(self.persisted_epoch).await;
+            let BatchResult {
+                mutations,
+                notifiers,
+                min_epoch,
+            } = self.base.serve_batch(self.persisted_epoch).await;
+
+            if let Some(min_epoch) = min_epoch {
+                self.handle_new_min_epoch(min_epoch);
+            }
 
             if mutations.is_empty() {
                 continue;
@@ -264,6 +314,21 @@ impl<W: JournalWriter, M: Machine> JournalService<W, M> {
             for (mutation, epoch) in proposals.into_iter() {
                 self.base.send_proposal(mutation, epoch).await;
             }
+        }
+    }
+
+    fn handle_new_min_epoch(&mut self, min_epoch: u64) {
+        assert!(min_epoch <= self.persisted_epoch + 1);
+
+        let desired_len = (self.persisted_epoch + 1 - min_epoch) as usize;
+        let actual_len = self.writer.get_blob_count();
+
+        if actual_len > desired_len {
+            debug!("Disposing log entries with epoch < {}", min_epoch);
+
+            self.writer
+                .dispose_oldest_blobs(actual_len - desired_len)
+                .unwrap_or_else(|err| panic!("Failed to dispose blobs: {}", err));
         }
     }
 }

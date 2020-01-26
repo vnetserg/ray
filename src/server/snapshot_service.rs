@@ -37,6 +37,7 @@ pub struct SnapshotService<S: SnapshotStorage, M: Machine> {
     storage: S,
     machine: M,
     proposal_receiver: mpsc::UnboundedReceiver<MutationProposal<M::Mutation>>,
+    min_epoch_sender: mpsc::UnboundedSender<u64>,
     epoch: u64,
     snapshot_interval: u64,
     batch_size: usize,
@@ -48,6 +49,7 @@ impl<S: SnapshotStorage, M: Machine> SnapshotService<S, M> {
         storage: S,
         machine: M,
         proposal_receiver: mpsc::UnboundedReceiver<MutationProposal<M::Mutation>>,
+        min_epoch_sender: mpsc::UnboundedSender<u64>,
         epoch: u64,
         snapshot_interval: u64,
         batch_size: usize,
@@ -56,6 +58,7 @@ impl<S: SnapshotStorage, M: Machine> SnapshotService<S, M> {
             storage,
             machine,
             proposal_receiver,
+            min_epoch_sender,
             epoch,
             snapshot_interval,
             batch_size,
@@ -117,7 +120,11 @@ impl<S: SnapshotStorage, M: Machine> SnapshotService<S, M> {
                 panic!("Failed to write snapshot: {}", err);
             });
 
+        self.min_epoch_sender
+            .unbounded_send(self.epoch + 1)
+            .expect("SnapshotService min_epoch_sender failed");
         self.last_snapshot_epoch = self.epoch;
+
         info!("Snapshot finished (epoch: {})", self.epoch);
     }
 }

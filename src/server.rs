@@ -11,10 +11,10 @@ pub use config::Config;
 
 use super::proto::storage_server::StorageServer;
 
-use config::{PsmConfig, LoggingConfig, LoggingTarget};
+use config::{LoggingConfig, LoggingTarget, PsmConfig};
 use directory_journal::DirectoryJournalReader;
 use directory_snapshot_storage::DirectorySnapshotStorage;
-use journal_service::{JournalServiceRestorer, JournalReader};
+use journal_service::{JournalReader, JournalServiceRestorer};
 use machine_service::{Machine, MachineService, MachineServiceHandle};
 use rpc::RayStorageService;
 use snapshot_service::{read_snapshot, SnapshotService, SnapshotStorage};
@@ -47,10 +47,11 @@ pub fn serve_forever(config: Config) -> ! {
     });
     let socket_address = SocketAddr::new(ip_address, config.rpc.port);
 
-    let journal_reader = DirectoryJournalReader::new(&config.journal_storage).unwrap_or_else(|err| {
-        error!("Failed to open '{}': {}", &config.journal_storage.path, err);
-        exit(1);
-    });
+    let journal_reader =
+        DirectoryJournalReader::new(&config.journal_storage).unwrap_or_else(|err| {
+            error!("Failed to open '{}': {}", &config.journal_storage.path, err);
+            exit(1);
+        });
 
     let snapshot_storage = DirectorySnapshotStorage::new(&config.snapshot_storage.path)
         .unwrap_or_else(|err| {
@@ -145,6 +146,7 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
     let (journal_sender, journal_receiver) = mpsc::channel(journal_config.request_queue_size);
     let (machine_sender, machine_receiver) = mpsc::channel(machine_config.request_queue_size);
     let (snapshot_sender, snapshot_receiver) = mpsc::unbounded();
+    let (min_epoch_sender, min_epoch_receiver) = mpsc::unbounded();
 
     let handle = MachineServiceHandle::new(journal_sender, machine_sender.clone());
 
@@ -170,6 +172,7 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
             machine_sender,
             snapshot_sender,
             journal_receiver,
+            min_epoch_receiver,
             journal_batch_size,
             epoch,
         );
@@ -185,6 +188,7 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
             storage,
             snapshot_machine,
             snapshot_receiver,
+            min_epoch_sender,
             epoch,
             snapshot_interval,
             snapshot_batch_size,
