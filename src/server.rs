@@ -1,20 +1,20 @@
 mod config;
-mod directory_mutation_log;
+mod directory_journal;
 mod directory_snapshot_storage;
-mod log_service;
+mod journal_service;
 mod machine_service;
 mod rpc;
 mod snapshot_service;
 mod storage_machine;
 
-pub use config::{Config, LoggingConfig, LoggingTarget};
+pub use config::Config;
 
 use super::proto::storage_server::StorageServer;
 
-use config::PsmConfig;
-use directory_mutation_log::DirectoryMutationLogReader;
+use config::{PsmConfig, LoggingConfig, LoggingTarget};
+use directory_journal::DirectoryJournalReader;
 use directory_snapshot_storage::DirectorySnapshotStorage;
-use log_service::{LogServiceRestorer, PersistentLogReader};
+use journal_service::{JournalServiceRestorer, JournalReader};
 use machine_service::{Machine, MachineService, MachineServiceHandle};
 use rpc::RayStorageService;
 use snapshot_service::{read_snapshot, SnapshotService, SnapshotStorage};
@@ -47,8 +47,8 @@ pub fn serve_forever(config: Config) -> ! {
     });
     let socket_address = SocketAddr::new(ip_address, config.rpc.port);
 
-    let log = DirectoryMutationLogReader::new(&config.mutation_log).unwrap_or_else(|err| {
-        error!("Failed to open '{}': {}", &config.mutation_log.path, err);
+    let journal_reader = DirectoryJournalReader::new(&config.journal_storage).unwrap_or_else(|err| {
+        error!("Failed to open '{}': {}", &config.journal_storage.path, err);
         exit(1);
     });
 
@@ -61,7 +61,7 @@ pub fn serve_forever(config: Config) -> ! {
             exit(1);
         });
 
-    let handle = run_psm(log, snapshot_storage, &config.psm);
+    let handle = run_psm(journal_reader, snapshot_storage, &config.psm);
     let storage_service = RayStorageService::new(handle);
     let server = Server::builder()
         .add_service(StorageServer::new(storage_service))
@@ -133,20 +133,20 @@ fn init_logging(configs: &[LoggingConfig]) {
     log_panics::init();
 }
 
-fn run_psm<M: Machine, R: PersistentLogReader, S: SnapshotStorage>(
-    log_reader: R,
+fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
+    journal_reader: R,
     storage: S,
     config: &PsmConfig,
 ) -> MachineServiceHandle<M> {
-    let log_config = &config.log_service;
+    let journal_config = &config.journal_service;
     let machine_config = &config.machine_service;
     let snapshot_config = &config.snapshot_service;
 
-    let (log_sender, log_receiver) = mpsc::channel(log_config.request_queue_size);
+    let (journal_sender, journal_receiver) = mpsc::channel(journal_config.request_queue_size);
     let (machine_sender, machine_receiver) = mpsc::channel(machine_config.request_queue_size);
     let (snapshot_sender, snapshot_receiver) = mpsc::unbounded();
 
-    let handle = MachineServiceHandle::new(log_sender, machine_sender.clone());
+    let handle = MachineServiceHandle::new(journal_sender, machine_sender.clone());
 
     let (machine, epoch) = match storage.open_last_snapshot() {
         Ok(Some(mut reader)) => {
@@ -163,18 +163,18 @@ fn run_psm<M: Machine, R: PersistentLogReader, S: SnapshotStorage>(
         Err(err) => panic!("Failed to open latest snapshot: {}", err),
     };
 
-    let log_batch_size = log_config.batch_size;
-    run_in_dedicated_thread("rayd-log", async move {
-        let restorer = LogServiceRestorer::<R, M>::new(
-            log_reader,
+    let journal_batch_size = journal_config.batch_size;
+    run_in_dedicated_thread("rayd-journal", async move {
+        let restorer = JournalServiceRestorer::<R, M>::new(
+            journal_reader,
             machine_sender,
             snapshot_sender,
-            log_receiver,
-            log_batch_size,
+            journal_receiver,
+            journal_batch_size,
             epoch,
         );
-        let mut log_service = restorer.restore().await;
-        log_service.serve().await;
+        let mut journal_service = restorer.restore().await;
+        journal_service.serve().await;
     });
 
     let snapshot_machine = machine.clone();

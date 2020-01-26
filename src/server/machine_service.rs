@@ -1,4 +1,4 @@
-use super::log_service::LogServiceRequest;
+use super::journal_service::JournalServiceRequest;
 
 use prost::Message;
 
@@ -40,32 +40,32 @@ pub enum MachineServiceRequest<M: Machine> {
 
 #[derive(Clone)]
 pub struct MachineServiceHandle<M: Machine> {
-    log_sender: mpsc::Sender<LogServiceRequest<M::Mutation>>,
+    journal_sender: mpsc::Sender<JournalServiceRequest<M::Mutation>>,
     machine_sender: mpsc::Sender<MachineServiceRequest<M>>,
 }
 
 impl<M: Machine> MachineServiceHandle<M> {
     pub fn new(
-        log_sender: mpsc::Sender<LogServiceRequest<M::Mutation>>,
+        journal_sender: mpsc::Sender<JournalServiceRequest<M::Mutation>>,
         machine_sender: mpsc::Sender<MachineServiceRequest<M>>,
     ) -> Self {
         Self {
-            log_sender,
+            journal_sender,
             machine_sender,
         }
     }
 
     pub async fn apply_mutation(&self, mutation: M::Mutation) {
         let (sender, receiver) = oneshot::channel();
-        let request = LogServiceRequest::PersistMutation {
+        let request = JournalServiceRequest::PersistMutation {
             mutation,
             notify: sender,
         };
-        self.log_sender
+        self.journal_sender
             .clone()
             .send(request)
             .await
-            .expect("log_receiver dropped");
+            .expect("MachinsServiceHandle journal_sender failed");
         receiver.await.expect("sender dropped");
     }
 
@@ -76,12 +76,12 @@ impl<M: Machine> MachineServiceHandle<M> {
 
     async fn get_persisted_epoch(&self) -> u64 {
         let (sender, receiver) = oneshot::channel();
-        let request = LogServiceRequest::GetPersistedEpoch(sender);
-        self.log_sender
+        let request = JournalServiceRequest::GetPersistedEpoch(sender);
+        self.journal_sender
             .clone()
             .send(request)
             .await
-            .expect("log_receiver dropped");
+            .expect("MachinsServiceHandle journal_sender failed");
         receiver.await.expect("sender dropped")
     }
 

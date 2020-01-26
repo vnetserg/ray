@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub rpc: RpcConfig,
     pub psm: PsmConfig,
-    pub mutation_log: MutationLogConfig,
+    pub journal_storage: JournalStorageConfig,
     pub snapshot_storage: SnapshotStorageConfig,
     pub logging: Vec<LoggingConfig>,
 }
@@ -16,7 +16,7 @@ impl Default for Config {
         Self {
             rpc: RpcConfig::default(),
             psm: PsmConfig::default(),
-            mutation_log: MutationLogConfig::default(),
+            journal_storage: JournalStorageConfig::default(),
             snapshot_storage: SnapshotStorageConfig::default(),
             logging: vec![LoggingConfig {
                 target: LoggingTarget::Stderr,
@@ -48,7 +48,7 @@ impl Default for RpcConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct PsmConfig {
     pub machine_service: MachineServiceConfig,
-    pub log_service: LogServiceConfig,
+    pub journal_service: JournalServiceConfig,
     pub snapshot_service: SnapshotServiceConfig,
 }
 
@@ -70,12 +70,12 @@ impl Default for MachineServiceConfig {
 
 #[derive(Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct LogServiceConfig {
+pub struct JournalServiceConfig {
     pub request_queue_size: usize,
     pub batch_size: usize,
 }
 
-impl Default for LogServiceConfig {
+impl Default for JournalServiceConfig {
     fn default() -> Self {
         Self {
             request_queue_size: 10000,
@@ -102,12 +102,12 @@ impl Default for SnapshotServiceConfig {
 
 #[derive(Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct MutationLogConfig {
+pub struct JournalStorageConfig {
     pub path: String,
     pub soft_file_size_limit: usize,
 }
 
-impl Default for MutationLogConfig {
+impl Default for JournalStorageConfig {
     fn default() -> Self {
         Self {
             path: String::from("./journal"),

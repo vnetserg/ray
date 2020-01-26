@@ -1,6 +1,6 @@
 use super::{
-    config::MutationLogConfig,
-    log_service::{PersistentLogReader, PersistentLogWriter, ReadResult},
+    config::JournalStorageConfig,
+    journal_service::{JournalReader, JournalWriter, ReadResult},
 };
 
 use chrono::Utc;
@@ -14,15 +14,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub struct DirectoryMutationLogReader {
+pub struct DirectoryJournalReader {
     path: PathBuf,
     file_paths: VecDeque<PathBuf>,
     current_file: Option<BufReader<File>>,
     writer_size_limit: usize,
 }
 
-impl DirectoryMutationLogReader {
-    pub fn new(config: &MutationLogConfig) -> io::Result<Self> {
+impl DirectoryJournalReader {
+    pub fn new(config: &JournalStorageConfig) -> io::Result<Self> {
         let path = PathBuf::from(&config.path);
         create_dir_all(path.as_path())?;
 
@@ -61,8 +61,8 @@ impl DirectoryMutationLogReader {
     }
 }
 
-impl PersistentLogReader for DirectoryMutationLogReader {
-    type Writer = DirectoryMutationLogWriter;
+impl JournalReader for DirectoryJournalReader {
+    type Writer = DirectoryJournalWriter;
 
     fn read_blob(mut self) -> io::Result<ReadResult<Self, Self::Writer>> {
         let mut buffer = [0u8; 4];
@@ -79,7 +79,7 @@ impl PersistentLogReader for DirectoryMutationLogReader {
         }
 
         if self.current_file.is_none() {
-            let writer = DirectoryMutationLogWriter::new(self.path, self.writer_size_limit)?;
+            let writer = DirectoryJournalWriter::new(self.path, self.writer_size_limit)?;
             return Ok(ReadResult::End(writer));
         }
 
@@ -95,14 +95,14 @@ impl PersistentLogReader for DirectoryMutationLogReader {
     }
 }
 
-pub struct DirectoryMutationLogWriter {
+pub struct DirectoryJournalWriter {
     directory_path: PathBuf,
     file: BufWriter<File>,
     size: usize,
     size_limit: usize,
 }
 
-impl DirectoryMutationLogWriter {
+impl DirectoryJournalWriter {
     fn new(directory_path: PathBuf, size_limit: usize) -> io::Result<Self> {
         let file = Self::open_new_file(&directory_path)?;
         let writer = Self {
@@ -123,7 +123,7 @@ impl DirectoryMutationLogWriter {
     }
 }
 
-impl PersistentLogWriter for DirectoryMutationLogWriter {
+impl JournalWriter for DirectoryJournalWriter {
     fn append_blob(&mut self, blob: &[u8]) -> io::Result<()> {
         assert!(blob.len() >> 32 == 0);
         self.size += blob.len() + 4;
