@@ -1,6 +1,6 @@
 mod config;
+mod directory_mutation_log;
 mod directory_snapshot_storage;
-mod file_mutation_log;
 mod log_service;
 mod machine_service;
 mod rpc;
@@ -12,8 +12,8 @@ pub use config::{Config, LoggingConfig, LoggingTarget};
 use super::proto::storage_server::StorageServer;
 
 use config::PsmConfig;
+use directory_mutation_log::DirectoryMutationLogReader;
 use directory_snapshot_storage::DirectorySnapshotStorage;
-use file_mutation_log::FileMutationLogReader;
 use log_service::{LogServiceRestorer, PersistentLogReader};
 use machine_service::{Machine, MachineService, MachineServiceHandle};
 use rpc::RayStorageService;
@@ -47,7 +47,7 @@ pub fn serve_forever(config: Config) -> ! {
     });
     let socket_address = SocketAddr::new(ip_address, config.rpc.port);
 
-    let log = FileMutationLogReader::new(&config.mutation_log).unwrap_or_else(|err| {
+    let log = DirectoryMutationLogReader::new(&config.mutation_log).unwrap_or_else(|err| {
         error!("Failed to open '{}': {}", &config.mutation_log.path, err);
         exit(1);
     });

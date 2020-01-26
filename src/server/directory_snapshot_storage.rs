@@ -25,7 +25,7 @@ impl Write for SnapshotWriter {
 impl PersistentWrite for SnapshotWriter {
     fn persist(&mut self) -> io::Result<()> {
         self.buffer.flush()?;
-        self.buffer.get_mut().sync_data()
+        self.buffer.get_ref().sync_data()
     }
 }
 

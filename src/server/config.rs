@@ -104,12 +104,14 @@ impl Default for SnapshotServiceConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct MutationLogConfig {
     pub path: String,
+    pub soft_file_size_limit: usize,
 }
 
 impl Default for MutationLogConfig {
     fn default() -> Self {
         Self {
-            path: String::from("./rayd-log.bin"),
+            path: String::from("./journal"),
+            soft_file_size_limit: 100_000_000,
         }
     }
 }
