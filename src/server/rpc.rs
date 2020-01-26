@@ -27,7 +27,7 @@ impl Storage for RayStorageService {
             remote_addr
         );
 
-        self.handle.apply_mutation(request.into_inner()).await;
+        self.handle.clone().apply_mutation(request.into_inner()).await;
 
         let reply = SetReply {};
         debug!("Replying: {} (to: {})", reply, remote_addr);
@@ -48,7 +48,7 @@ impl Storage for RayStorageService {
 
         let request = request.into_inner();
         let key = request.key.into_boxed_slice();
-        let value = self.handle.query_state(key).await;
+        let value = self.handle.clone().query_state(key).await;
 
         let reply = GetReply {
             value: value.to_vec(),

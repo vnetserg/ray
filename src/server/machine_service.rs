@@ -55,37 +55,35 @@ impl<M: Machine> MachineServiceHandle<M> {
         }
     }
 
-    pub async fn apply_mutation(&self, mutation: M::Mutation) {
+    pub async fn apply_mutation(&mut self, mutation: M::Mutation) {
         let (sender, receiver) = oneshot::channel();
         let request = JournalServiceRequest::PersistMutation {
             mutation,
             notify: sender,
         };
         self.journal_sender
-            .clone()
             .send(request)
             .await
             .expect("MachinsServiceHandle journal_sender failed");
         receiver.await.expect("sender dropped");
     }
 
-    pub async fn query_state(&self, query: M::Query) -> M::Status {
+    pub async fn query_state(&mut self, query: M::Query) -> M::Status {
         let epoch = self.get_persisted_epoch().await;
         self.query_state_after(query, epoch).await
     }
 
-    async fn get_persisted_epoch(&self) -> u64 {
+    async fn get_persisted_epoch(&mut self) -> u64 {
         let (sender, receiver) = oneshot::channel();
         let request = JournalServiceRequest::GetPersistedEpoch(sender);
         self.journal_sender
-            .clone()
             .send(request)
             .await
             .expect("MachinsServiceHandle journal_sender failed");
         receiver.await.expect("sender dropped")
     }
 
-    async fn query_state_after(&self, query: M::Query, epoch: u64) -> M::Status {
+    async fn query_state_after(&mut self, query: M::Query, epoch: u64) -> M::Status {
         let (sender, receiver) = oneshot::channel();
         let request = MachineServiceRequest::Query {
             query,
@@ -93,7 +91,6 @@ impl<M: Machine> MachineServiceHandle<M> {
             result: sender,
         };
         self.machine_sender
-            .clone()
             .send(request)
             .await
             .expect("machine_receiver dropped");
