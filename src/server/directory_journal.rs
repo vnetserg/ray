@@ -30,8 +30,17 @@ impl DirectoryJournalBase {
     fn dispose_oldest_blobs(&mut self, mut blob_count: usize) -> io::Result<()> {
         while !self.previous_files.is_empty() && blob_count >= self.previous_files[0].1 {
             let (ref path, file_blob_count) = self.previous_files[0];
-            debug!("Removing journal file: {:?}", path);
-            remove_file(path)?;
+
+            if let Err(err) = remove_file(path) {
+                if err.kind() == io::ErrorKind::NotFound {
+                    debug!("Journal file is already removed: {:?}", path);
+                } else {
+                    return Err(err);
+                }
+            } else {
+                debug!("Removed journal file: {:?}", path);
+            }
+
             self.total_blob_count -= file_blob_count;
             blob_count -= file_blob_count;
             self.previous_files.pop_front();
