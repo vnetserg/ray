@@ -104,14 +104,14 @@ impl Default for SnapshotServiceConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct JournalStorageConfig {
     pub path: String,
-    pub soft_file_size_limit: usize,
+    pub file_size_soft_limit: usize,
 }
 
 impl Default for JournalStorageConfig {
     fn default() -> Self {
         Self {
             path: String::from("./journal"),
-            soft_file_size_limit: 100_000_000,
+            file_size_soft_limit: 100_000_000,
         }
     }
 }

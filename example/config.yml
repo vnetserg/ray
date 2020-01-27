@@ -9,14 +9,14 @@ psm:
         mutation_queue_size: 10000
     journal_service:
         request_queue_size: 10000
-        batch_size: 100
+        batch_size: 1000
     snapshot_service:
         snapshot_interval: 100000
         batch_size: 1000000
 
 journal_storage:
     path: ./journal
-    soft_file_size_limit: 100000000
+    file_size_soft_limit: 100000000
 
 snapshot_storage:
     path: ./snapshots

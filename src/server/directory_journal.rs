@@ -9,25 +9,51 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use std::{
     collections::VecDeque,
-    fs::{create_dir_all, read_dir, File, OpenOptions},
+    fs::{create_dir_all, read_dir, remove_file, File, OpenOptions},
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
 };
 
+struct DirectoryJournalBase {
+    directory_path: PathBuf,
+    previous_files: VecDeque<(PathBuf, usize)>,
+    total_blob_count: usize,
+    file_size_soft_limit: usize,
+}
+
+impl DirectoryJournalBase {
+    fn push_file(&mut self, path: PathBuf, blob_count: usize) {
+        self.total_blob_count += blob_count;
+        self.previous_files.push_back((path, blob_count));
+    }
+
+    fn dispose_oldest_blobs(&mut self, mut blob_count: usize) -> io::Result<()> {
+        while !self.previous_files.is_empty() && blob_count >= self.previous_files[0].1 {
+            let (ref path, file_blob_count) = self.previous_files[0];
+            debug!("Removing journal file: {:?}", path);
+            remove_file(path)?;
+            self.total_blob_count -= file_blob_count;
+            blob_count -= file_blob_count;
+            self.previous_files.pop_front();
+        }
+        Ok(())
+    }
+}
+
 pub struct DirectoryJournalReader {
-    path: PathBuf,
     file_paths: VecDeque<PathBuf>,
     current_file: Option<BufReader<File>>,
-    writer_size_limit: usize,
+    current_file_blob_count: usize,
+    base: DirectoryJournalBase,
 }
 
 impl DirectoryJournalReader {
     pub fn new(config: &JournalStorageConfig) -> io::Result<Self> {
-        let path = PathBuf::from(&config.path);
-        create_dir_all(path.as_path())?;
+        let directory_path = PathBuf::from(&config.path);
+        create_dir_all(directory_path.as_path())?;
 
         let mut file_paths = vec![];
-        for entry in read_dir(&path)? {
+        for entry in read_dir(&directory_path)? {
             let file_path = entry?.path();
             if file_path.to_string_lossy().ends_with(".jnl") {
                 file_paths.push(file_path.to_owned());
@@ -36,28 +62,58 @@ impl DirectoryJournalReader {
 
         file_paths.sort();
 
-        let mut reader = Self {
-            path,
-            file_paths: file_paths.into(),
-            current_file: None,
-            writer_size_limit: config.soft_file_size_limit,
+        let current_file = if file_paths.is_empty() {
+            None
+        } else {
+            Some(Self::open_file(&file_paths[0])?)
         };
 
-        reader.open_next_file()?;
+        let base = DirectoryJournalBase {
+            directory_path,
+            previous_files: VecDeque::new(),
+            total_blob_count: 0,
+            file_size_soft_limit: config.file_size_soft_limit,
+        };
+
+        let reader = Self {
+            file_paths: file_paths.into(),
+            current_file,
+            current_file_blob_count: 0,
+            base,
+        };
 
         Ok(reader)
     }
 
-    fn open_next_file(&mut self) -> io::Result<()> {
-        if self.file_paths.is_empty() {
-            self.current_file = None;
-        } else {
-            let file = OpenOptions::new().read(true).open(&self.file_paths[0])?;
-            let reader = BufReader::new(file);
-            self.current_file = Some(reader);
-            self.file_paths.pop_front();
+    fn open_file(path: &Path) -> io::Result<BufReader<File>> {
+        let file = OpenOptions::new().read(true).open(path)?;
+        Ok(BufReader::new(file))
+    }
+
+    fn read_from_next_file(&mut self) -> io::Result<Option<u8>> {
+        let mut buffer = [0u8];
+        while let Some(ref mut file) = self.current_file {
+            if let Err(err) = file.read_exact(&mut buffer) {
+                if err.kind() == io::ErrorKind::UnexpectedEof {
+                    let path = self.file_paths.pop_front().unwrap();
+                    self.base.push_file(path, self.current_file_blob_count);
+
+                    if self.file_paths.is_empty() {
+                        self.current_file = None;
+                        break;
+                    } else {
+                        self.current_file_blob_count = 0;
+                        self.current_file = Some(Self::open_file(&self.file_paths[0])?);
+                    }
+                } else {
+                    return Err(err);
+                }
+            } else {
+                return Ok(Some(buffer[0]));
+            }
         }
-        Ok(())
+
+        Ok(None)
     }
 }
 
@@ -66,22 +122,13 @@ impl JournalReader for DirectoryJournalReader {
 
     fn read_blob(mut self) -> io::Result<ReadResult<Self, Self::Writer>> {
         let mut buffer = [0u8; 4];
-        while let Some(ref mut file) = self.current_file {
-            if let Err(err) = file.read_exact(&mut buffer[..1]) {
-                if err.kind() == io::ErrorKind::UnexpectedEof {
-                    self.open_next_file()?;
-                } else {
-                    return Err(err);
-                }
-            } else {
-                break;
+        buffer[0] = match self.read_from_next_file()? {
+            Some(value) => value,
+            None => {
+                let writer = DirectoryJournalWriter::new(self.base)?;
+                return Ok(ReadResult::End(writer));
             }
-        }
-
-        if self.current_file.is_none() {
-            let writer = DirectoryJournalWriter::new(self.path, self.writer_size_limit)?;
-            return Ok(ReadResult::End(writer));
-        }
+        };
 
         let file = self.current_file.as_mut().unwrap();
 
@@ -91,42 +138,50 @@ impl JournalReader for DirectoryJournalReader {
         let mut blob = vec![0; len as usize];
         file.read_exact(&mut blob)?;
 
+        self.current_file_blob_count += 1;
+
         Ok(ReadResult::Blob(blob, self))
     }
 }
 
 pub struct DirectoryJournalWriter {
-    directory_path: PathBuf,
     file: BufWriter<File>,
-    size: usize,
-    size_limit: usize,
+    file_path: PathBuf,
+    current_file_size: usize,
+    current_file_blob_count: usize,
+    base: DirectoryJournalBase,
 }
 
 impl DirectoryJournalWriter {
-    fn new(directory_path: PathBuf, size_limit: usize) -> io::Result<Self> {
-        let file = Self::open_new_file(&directory_path)?;
+    fn new(base: DirectoryJournalBase) -> io::Result<Self> {
+        let (file, file_path) = Self::open_new_file(&base.directory_path)?;
         let writer = Self {
-            directory_path,
             file,
-            size_limit,
-            size: 0,
+            file_path,
+            current_file_size: 0,
+            current_file_blob_count: 0,
+            base,
         };
         Ok(writer)
     }
 
-    fn open_new_file(directory_path: &Path) -> io::Result<BufWriter<File>> {
+    fn open_new_file(directory_path: &Path) -> io::Result<(BufWriter<File>, PathBuf)> {
         let file_name = format!("{}.jnl", Utc::now().format("%+"));
         let path = Path::new(&directory_path).join(file_name);
-        debug!("Opening new journal: {:?}", path);
-        let file = OpenOptions::new().write(true).create_new(true).open(path)?;
-        Ok(BufWriter::new(file))
+        debug!("Starting new journal file: {:?}", path);
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        Ok((BufWriter::new(file), path))
     }
 }
 
 impl JournalWriter for DirectoryJournalWriter {
     fn append_blob(&mut self, blob: &[u8]) -> io::Result<()> {
         assert!(blob.len() >> 32 == 0);
-        self.size += blob.len() + 4;
+        self.current_file_size += blob.len() + 4;
+        self.current_file_blob_count += 1;
         self.file
             .write_u32::<LittleEndian>(blob.len() as u32)
             .and_then(|_| self.file.write_all(blob))
@@ -135,19 +190,24 @@ impl JournalWriter for DirectoryJournalWriter {
     fn persist(&mut self) -> io::Result<()> {
         self.file.flush()?;
         self.file.get_ref().sync_data()?;
-        if self.size >= self.size_limit {
-            self.file = Self::open_new_file(&self.directory_path)?;
+        if self.current_file_size >= self.base.file_size_soft_limit {
+            let (new_file, new_file_path) = Self::open_new_file(&self.base.directory_path)?;
+            self.base.push_file(
+                std::mem::replace(&mut self.file_path, new_file_path),
+                self.current_file_blob_count,
+            );
+            self.file = new_file;
+            self.current_file_size = 0;
+            self.current_file_blob_count = 0;
         }
         Ok(())
     }
 
     fn get_blob_count(&self) -> usize {
-        // TODO
-        1
+        self.base.total_blob_count
     }
 
-    fn dispose_oldest_blobs(&mut self, _blob_count: usize) -> io::Result<()> {
-        // TODO
-        Ok(())
+    fn dispose_oldest_blobs(&mut self, blob_count: usize) -> io::Result<()> {
+        self.base.dispose_oldest_blobs(blob_count)
     }
 }
