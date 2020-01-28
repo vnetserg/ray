@@ -1,8 +1,8 @@
-use crate::{proto, server::machine_service::Machine};
+use crate::{proto, server::machine_service::Machine, util::try_read_u32};
 
 use prost::Message;
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, WriteBytesExt};
 
 use std::{
     collections::HashMap,
@@ -58,21 +58,7 @@ impl Machine for StorageMachine {
     fn from_snapshot<T: Read>(reader: &mut T) -> io::Result<Self> {
         let mut machine = Self::default();
 
-        let read_length = |rd: &mut T| -> io::Result<Option<usize>> {
-            let mut buffer = [0u8; 4];
-            if let Err(err) = rd.read_exact(&mut buffer[..1]) {
-                if err.kind() == io::ErrorKind::UnexpectedEof {
-                    return Ok(None);
-                } else {
-                    return Err(err);
-                }
-            }
-            rd.read_exact(&mut buffer[1..])?;
-            let len = (&buffer[..]).read_u32::<LittleEndian>().unwrap();
-            Ok(Some(len as usize))
-        };
-
-        while let Some(len) = read_length(reader)? {
+        while let Some(len) = try_read_u32(reader)? {
             let mut buffer = vec![0; len];
             reader.read_exact(&mut buffer)?;
             let set = proto::SetRequest::decode(&buffer[..])?;

@@ -4,6 +4,7 @@ extern crate log;
 pub mod client;
 pub mod proto;
 pub mod server;
+mod util;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");

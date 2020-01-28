@@ -2,10 +2,11 @@ use super::{
     config::JournalStorageConfig,
     journal_service::{JournalReader, JournalWriter, ReadResult},
 };
+use crate::util::try_read_u32;
 
 use chrono::Utc;
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, WriteBytesExt};
 
 use std::{
     collections::VecDeque,
@@ -99,11 +100,10 @@ impl DirectoryJournalReader {
         Ok(BufReader::new(file))
     }
 
-    fn read_from_next_file(&mut self) -> io::Result<Option<u8>> {
-        let mut buffer = [0u8];
+    fn read_len(&mut self) -> io::Result<Option<usize>> {
         while let Some(ref mut file) = self.current_file {
-            if let Err(err) = file.read_exact(&mut buffer) {
-                if err.kind() == io::ErrorKind::UnexpectedEof {
+            match try_read_u32(file)? {
+                None => {
                     let path = self.file_paths.pop_front().unwrap();
                     self.base.push_file(path, self.current_file_blob_count);
 
@@ -111,14 +111,11 @@ impl DirectoryJournalReader {
                         self.current_file = None;
                         break;
                     } else {
-                        self.current_file_blob_count = 0;
                         self.current_file = Some(Self::open_file(&self.file_paths[0])?);
+                        self.current_file_blob_count = 0;
                     }
-                } else {
-                    return Err(err);
                 }
-            } else {
-                return Ok(Some(buffer[0]));
+                Some(len) => return Ok(Some(len)),
             }
         }
 
@@ -130,22 +127,16 @@ impl JournalReader for DirectoryJournalReader {
     type Writer = DirectoryJournalWriter;
 
     fn read_blob(mut self) -> io::Result<ReadResult<Self, Self::Writer>> {
-        let mut buffer = [0u8; 4];
-        buffer[0] = match self.read_from_next_file()? {
-            Some(value) => value,
+        let len = match self.read_len()? {
+            Some(len) => len,
             None => {
                 let writer = DirectoryJournalWriter::new(self.base)?;
                 return Ok(ReadResult::End(writer));
             }
         };
 
-        let file = self.current_file.as_mut().unwrap();
-
-        file.read_exact(&mut buffer[1..])?;
-        let len = (&buffer[..]).read_u32::<LittleEndian>().unwrap();
-
         let mut blob = vec![0; len as usize];
-        file.read_exact(&mut blob)?;
+        self.current_file.as_mut().unwrap().read_exact(&mut blob)?;
 
         self.current_file_blob_count += 1;
 
