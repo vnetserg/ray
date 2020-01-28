@@ -201,9 +201,10 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
         }
 
         if mutation_count > 0 {
+            let first_epoch = last_epoch + 1 - mutation_count as u64;
             info!(
-                "Recovered {} mutations from journal (persisted epoch: {})",
-                mutation_count, last_epoch
+                "Recovered {} mutations from journal (epoch range: [{}, {}])",
+                mutation_count, first_epoch, last_epoch
             );
         }
 

@@ -213,10 +213,15 @@ impl JournalWriter for DirectoryJournalWriter {
     }
 
     fn get_blob_count(&self) -> usize {
-        self.base.total_blob_count
+        self.base.total_blob_count + self.current_file_blob_count
     }
 
     fn dispose_oldest_blobs(&mut self, blob_count: usize) -> io::Result<()> {
-        self.base.dispose_oldest_blobs(blob_count)
+        if blob_count > self.current_file_blob_count {
+            self.base
+                .dispose_oldest_blobs(blob_count - self.current_file_blob_count)
+        } else {
+            Ok(())
+        }
     }
 }
