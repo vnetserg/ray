@@ -5,6 +5,7 @@ use tonic::{
     Request, Status,
 };
 
+#[derive(Clone)]
 pub struct RayClient {
     client: proto::storage_client::StorageClient<Channel>,
 }
