@@ -1,17 +1,12 @@
 use ray::{
-    benchmark::{
-        BenchmarkConfig,
-        run_benchmark,
-        SimpleReadBenchmark,
-        SimpleWriteBenchmark,
-    },
+    benchmark::{run_benchmark, BenchmarkConfig, SimpleReadBenchmark, SimpleWriteBenchmark},
     server::Config,
 };
 
 use clap::{value_t_or_exit, App, AppSettings, Arg, SubCommand};
 
 use log::LevelFilter;
-use simplelog::{SimpleLogger, LevelPadding};
+use simplelog::{LevelPadding, SimpleLogger};
 
 const ABOUT: &str = "Ray benchmark tool";
 
@@ -67,11 +62,10 @@ fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
             SubCommand::with_name("read")
                 .about("Simple read benchmark: all clients fetch the same key in a loop"),
         )
-        .subcommand(
-            SubCommand::with_name("write")
-                .about("Simple write benchmark: each client generates a random key-value pair \
-                       and inserts it in a loop"),
-        );
+        .subcommand(SubCommand::with_name("write").about(
+            "Simple write benchmark: each client generates a random key-value pair \
+             and inserts it in a loop",
+        ));
 
     let matches = parser.get_matches();
 
@@ -80,7 +74,12 @@ fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
     let threads = value_t_or_exit!(matches, "threads", u16);
     let tasks = value_t_or_exit!(matches, "clients", u16);
 
-    let config = BenchmarkConfig { address, port, threads, tasks };
+    let config = BenchmarkConfig {
+        address,
+        port,
+        threads,
+        tasks,
+    };
 
     let kind = match matches.subcommand_name().unwrap() {
         "read" => BenchmarkKind::Read,
@@ -94,13 +93,11 @@ fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
 fn init_logging() {
     let config = simplelog::ConfigBuilder::new()
         .add_filter_allow_str("ray")
-        .add_filter_allow_str("log_panics")
         .set_time_format_str("%T%.3f")
         .set_thread_level(LevelFilter::Off)
         .set_level_padding(LevelPadding::Off)
         .build();
     SimpleLogger::init(LevelFilter::Info, config).unwrap();
-    log_panics::init();
 }
 
 fn main() {

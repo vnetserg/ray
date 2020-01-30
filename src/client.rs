@@ -29,3 +29,19 @@ impl RayClient {
         response.map(|_| ())
     }
 }
+
+#[derive(Clone)]
+pub struct RayClientConnector {
+    address: String,
+    port: u16,
+}
+
+impl RayClientConnector {
+    pub fn new(address: String, port: u16) -> Self {
+        Self { address, port }
+    }
+
+    pub async fn connect(&self) -> Result<RayClient, Error> {
+        RayClient::connect(&self.address, self.port).await
+    }
+}

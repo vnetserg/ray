@@ -1,9 +1,6 @@
-use crate::client::RayClient;
+use crate::client::{RayClient, RayClientConnector};
 
-use tokio::{
-    runtime,
-    time,
-};
+use tokio::{runtime, time};
 
 use futures::{channel::mpsc, select, stream::StreamExt};
 
@@ -50,10 +47,7 @@ impl Benchmark for SimpleReadBenchmark {
             .unwrap_or_else(|err| panic!("failed to set key: {}", err));
     }
 
-    async fn do_task(
-        mut client: RayClient,
-        sender: mpsc::UnboundedSender<Self::Message>,
-    ) {
+    async fn do_task(mut client: RayClient, sender: mpsc::UnboundedSender<Self::Message>) {
         loop {
             let now = Instant::now();
             if let Err(err) = client.get("hello".into()).await {
@@ -94,10 +88,7 @@ impl Benchmark for SimpleWriteBenchmark {
 
     async fn setup(&mut self, _client: RayClient) {}
 
-    async fn do_task(
-        mut client: RayClient,
-        sender: mpsc::UnboundedSender<Self::Message>,
-    ) {
+    async fn do_task(mut client: RayClient, sender: mpsc::UnboundedSender<Self::Message>) {
         let random_bytes = || -> Vec<u8> {
             let value: u64 = rand::thread_rng().gen();
             let bytes = value.to_le_bytes();
@@ -154,18 +145,27 @@ pub fn run_benchmark<B: Benchmark>(benchmark: B, config: BenchmarkConfig) {
         .unwrap_or_else(|err| panic!("Benchmark failed: {}", err))
 }
 
-async fn run_benchmark_inner<B: Benchmark>(mut benchmark: B, config: BenchmarkConfig)
--> Result<(), Box<dyn Error>> {
+async fn run_benchmark_inner<B: Benchmark>(
+    mut benchmark: B,
+    config: BenchmarkConfig,
+) -> Result<(), Box<dyn Error>> {
     info!("Starting benchmark: {}", B::NAME);
 
-    let client = RayClient::connect(&config.address, config.port).await?;
+    let connector = RayClientConnector::new(config.address.clone(), config.port);
+    let client = connector.connect().await?;
     benchmark.setup(client).await;
 
     let (sender, mut receiver) = mpsc::unbounded();
     for _ in 0..config.tasks {
-        let task_client = RayClient::connect(&config.address, config.port).await?;
         let task_sender = sender.clone();
-        tokio::spawn(B::do_task(task_client, task_sender));
+        let task_connector = connector.clone();
+        tokio::spawn(async move {
+            let task_client = task_connector
+                .connect()
+                .await
+                .unwrap_or_else(|err| panic!("Connection failed: {}", err));
+            B::do_task(task_client, task_sender).await
+        });
     }
 
     let (interval_sender, mut interval_receiver) = mpsc::unbounded();
