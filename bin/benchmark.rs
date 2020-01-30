@@ -3,6 +3,7 @@ use ray::{
         BenchmarkConfig,
         run_benchmark,
         SimpleReadBenchmark,
+        SimpleWriteBenchmark,
     },
     server::Config,
 };
@@ -16,6 +17,7 @@ const ABOUT: &str = "Ray benchmark tool";
 
 enum BenchmarkKind {
     Read,
+    Write,
 }
 
 fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
@@ -63,7 +65,12 @@ fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
         )
         .subcommand(
             SubCommand::with_name("read")
-                .about("Simple read benchmark: all clients fetch the same key"),
+                .about("Simple read benchmark: all clients fetch the same key in a loop"),
+        )
+        .subcommand(
+            SubCommand::with_name("write")
+                .about("Simple write benchmark: each client generates a random key-value pair \
+                       and inserts it in a loop"),
         );
 
     let matches = parser.get_matches();
@@ -77,6 +84,7 @@ fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
 
     let kind = match matches.subcommand_name().unwrap() {
         "read" => BenchmarkKind::Read,
+        "write" => BenchmarkKind::Write,
         _ => unreachable!(),
     };
 
@@ -103,6 +111,10 @@ fn main() {
     match kind {
         BenchmarkKind::Read => {
             let benchmark = SimpleReadBenchmark::default();
+            run_benchmark(benchmark, config);
+        }
+        BenchmarkKind::Write => {
+            let benchmark = SimpleWriteBenchmark::default();
             run_benchmark(benchmark, config);
         }
     }

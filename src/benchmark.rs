@@ -7,6 +7,8 @@ use tokio::{
 
 use futures::{channel::mpsc, select, stream::StreamExt};
 
+use rand::Rng;
+
 use std::{
     error::Error,
     time::{Duration, Instant},
@@ -56,6 +58,59 @@ impl Benchmark for SimpleReadBenchmark {
             let now = Instant::now();
             if let Err(err) = client.get("hello".into()).await {
                 error!("Failed to get key 'hello': {}", err);
+                continue;
+            }
+            let elapsed = now.elapsed();
+            sender.unbounded_send(elapsed.as_secs_f64()).unwrap();
+        }
+    }
+
+    fn handle_message(&mut self, message: Self::Message) {
+        self.latencies.push(message);
+    }
+
+    fn handle_tick(&mut self) {
+        let requests = self.latencies.len();
+        let average = if requests > 0 {
+            let sum: f64 = self.latencies.iter().sum();
+            sum / (requests as f64)
+        } else {
+            0.
+        };
+        info!("RPS: {} (average latency: {})", requests, average);
+        self.latencies.clear();
+    }
+}
+
+#[derive(Default)]
+pub struct SimpleWriteBenchmark {
+    latencies: Vec<f64>,
+}
+
+#[tonic::async_trait]
+impl Benchmark for SimpleWriteBenchmark {
+    const NAME: &'static str = "simple write";
+    type Message = f64;
+
+    async fn setup(&mut self, _client: RayClient) {}
+
+    async fn do_task(
+        mut client: RayClient,
+        sender: mpsc::UnboundedSender<Self::Message>,
+    ) {
+        let random_bytes = || -> Vec<u8> {
+            let value: u64 = rand::thread_rng().gen();
+            let bytes = value.to_le_bytes();
+            bytes.to_vec()
+        };
+
+        let key = random_bytes();
+        let value = random_bytes();
+
+        loop {
+            let now = Instant::now();
+            if let Err(err) = client.set(key.clone(), value.clone()).await {
+                error!("Set failed: {}", err);
                 continue;
             }
             let elapsed = now.elapsed();

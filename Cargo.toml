@@ -29,6 +29,7 @@ log = { version = "0.4", features = ["release_max_level_info"] }
 log-panics = { version = "2.0", features = ["with-backtrace"] }
 num_cpus = "1.11"
 prost = "0.6"
+rand = "0.7"
 simplelog = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.8"
