@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate log;
 
+pub mod benchmark;
 pub mod client;
 pub mod proto;
 pub mod server;

@@ -1,33 +1,30 @@
-#[macro_use]
-extern crate log;
+use ray::{
+    benchmark::{
+        BenchmarkConfig,
+        run_benchmark,
+        SimpleReadBenchmark,
+    },
+    server::Config,
+};
 
-use ray::{client::RayClient, server::Config};
-
-use clap::{value_t_or_exit, App, Arg};
-
-use tokio::{task, time};
-
-use futures::{select, channel::mpsc, stream::StreamExt};
+use clap::{value_t_or_exit, App, AppSettings, Arg, SubCommand};
 
 use log::LevelFilter;
-use simplelog::SimpleLogger;
-
-use std::time::{Duration, Instant};
+use simplelog::{SimpleLogger, LevelPadding};
 
 const ABOUT: &str = "Ray benchmark tool";
 
-struct Arguments {
-    address: String,
-    port: u16,
-    clients: u16,
+enum BenchmarkKind {
+    Read,
 }
 
-fn parse_arguments() -> Arguments {
+fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
     let default_port_string = Config::default().rpc.port.to_string();
-    let parser = App::new("ray-benchmark")
+    let parser = App::new("ray")
         .version(ray::VERSION)
         .author(ray::AUTHORS)
         .about(ABOUT)
+        .setting(AppSettings::SubcommandRequiredElseHelp)
         .arg(
             Arg::with_name("address")
                 .short("a")
@@ -47,82 +44,66 @@ fn parse_arguments() -> Arguments {
                 .default_value(&default_port_string),
         )
         .arg(
+            Arg::with_name("threads")
+                .short("t")
+                .long("threads")
+                .value_name("COUNT")
+                .help("blocking threads count (0 for cpu per thread)")
+                .takes_value(true)
+                .default_value("0"),
+        )
+        .arg(
             Arg::with_name("clients")
                 .short("c")
                 .long("clients")
                 .value_name("COUNT")
-                .help("concurrent clients count")
+                .help("number of concurrent clients")
                 .takes_value(true)
                 .default_value("256"),
+        )
+        .subcommand(
+            SubCommand::with_name("read")
+                .about("Simple read benchmark: all clients fetch the same key"),
         );
 
     let matches = parser.get_matches();
 
     let address = matches.value_of("address").unwrap().to_string();
     let port = value_t_or_exit!(matches, "port", u16);
-    let clients = value_t_or_exit!(matches, "clients", u16);
+    let threads = value_t_or_exit!(matches, "threads", u16);
+    let tasks = value_t_or_exit!(matches, "clients", u16);
 
-    Arguments {
-        address,
-        port,
-        clients,
-    }
+    let config = BenchmarkConfig { address, port, threads, tasks };
+
+    let kind = match matches.subcommand_name().unwrap() {
+        "read" => BenchmarkKind::Read,
+        _ => unreachable!(),
+    };
+
+    (config, kind)
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    SimpleLogger::init(LevelFilter::Info, simplelog::Config::default()).unwrap();
+fn init_logging() {
+    let config = simplelog::ConfigBuilder::new()
+        .add_filter_allow_str("ray")
+        .add_filter_allow_str("log_panics")
+        .set_time_format_str("%T%.3f")
+        .set_thread_level(LevelFilter::Off)
+        .set_level_padding(LevelPadding::Off)
+        .build();
+    SimpleLogger::init(LevelFilter::Info, config).unwrap();
+    log_panics::init();
+}
 
-    let arguments = parse_arguments();
+fn main() {
+    init_logging();
 
-    let mut client = RayClient::connect(&arguments.address, arguments.port).await?;
-    client.set("hello".into(), "world".into()).await?;
+    let (config, kind) = parse_arguments();
 
-    let (sender, mut receiver) = mpsc::unbounded();
-
-    info!("Creating {} clients", arguments.clients);
-
-    for _ in 0..arguments.clients {
-        let task_sender = sender.clone();
-        let address = arguments.address.clone();
-        let port = arguments.port;
-        task::spawn(async move {
-            let mut client = RayClient::connect(&address, port).await.unwrap();
-            loop {
-                let now = Instant::now();
-                client.get("hello".into()).await.unwrap();
-                let elapsed = now.elapsed();
-                task_sender.unbounded_send(elapsed.as_secs_f64()).unwrap();
-            }
-        });
-    }
-
-    let (interval_sender, mut interval_receiver) = mpsc::unbounded();
-    task::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(1));
-        loop {
-            interval.tick().await;
-            interval_sender.unbounded_send(()).unwrap();
-        }
-    });
-
-    let mut latencies = vec![];
-    loop {
-        select! {
-            value = receiver.next() => {
-                latencies.push(value.unwrap());
-            }
-            _ = interval_receiver.next() => {
-                let requests = latencies.len();
-                let median = if requests > 0 {
-                    let sum: f64 = latencies.iter().sum();
-                    sum / (requests as f64)
-                } else {
-                    0.
-                };
-                info!("RPS: {} (average latency: {})", requests, median);
-                latencies.clear();
-            }
+    match kind {
+        BenchmarkKind::Read => {
+            let benchmark = SimpleReadBenchmark::default();
+            run_benchmark(benchmark, config);
         }
     }
 }
