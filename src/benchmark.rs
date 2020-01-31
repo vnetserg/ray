@@ -4,8 +4,6 @@ use tokio::{runtime, time};
 
 use futures::{channel::mpsc, select, stream::StreamExt};
 
-use rand::Rng;
-
 use std::{
     error::Error,
     time::{Duration, Instant},
@@ -14,20 +12,29 @@ use std::{
 #[tonic::async_trait]
 pub trait Benchmark: 'static {
     const NAME: &'static str;
+
     type Message: Send + 'static;
 
     async fn setup(&mut self, client: RayClient);
-    async fn do_task(client: RayClient, sender: mpsc::UnboundedSender<Self::Message>);
+    async fn do_task(
+        client: RayClient,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        sender: mpsc::UnboundedSender<Self::Message>,
+    );
 
     fn handle_message(&mut self, message: Self::Message);
     fn handle_tick(&mut self);
 }
 
+#[derive(Debug)]
 pub struct BenchmarkConfig {
     pub address: String,
     pub port: u16,
     pub threads: u16,
     pub tasks: u16,
+    pub key_length: usize,
+    pub value_length: usize,
 }
 
 #[derive(Default)]
@@ -47,7 +54,16 @@ impl Benchmark for SimpleReadBenchmark {
             .unwrap_or_else(|err| panic!("failed to set key: {}", err));
     }
 
-    async fn do_task(mut client: RayClient, sender: mpsc::UnboundedSender<Self::Message>) {
+    async fn do_task(
+        mut client: RayClient,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        sender: mpsc::UnboundedSender<Self::Message>,
+    ) {
+        client
+            .set(key, value)
+            .await
+            .unwrap_or_else(|err| panic!("Set failed: {}", err));
         loop {
             let now = Instant::now();
             if let Err(err) = client.get("hello".into()).await {
@@ -88,16 +104,12 @@ impl Benchmark for SimpleWriteBenchmark {
 
     async fn setup(&mut self, _client: RayClient) {}
 
-    async fn do_task(mut client: RayClient, sender: mpsc::UnboundedSender<Self::Message>) {
-        let random_bytes = || -> Vec<u8> {
-            let value: u64 = rand::thread_rng().gen();
-            let bytes = value.to_le_bytes();
-            bytes.to_vec()
-        };
-
-        let key = random_bytes();
-        let value = random_bytes();
-
+    async fn do_task(
+        mut client: RayClient,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        sender: mpsc::UnboundedSender<Self::Message>,
+    ) {
         loop {
             let now = Instant::now();
             if let Err(err) = client.set(key.clone(), value.clone()).await {
@@ -150,6 +162,7 @@ async fn run_benchmark_inner<B: Benchmark>(
     config: BenchmarkConfig,
 ) -> Result<(), Box<dyn Error>> {
     info!("Starting benchmark: {}", B::NAME);
+    info!("Benchmark config: {:?}", config);
 
     let connector = RayClientConnector::new(config.address.clone(), config.port);
     let client = connector.connect().await?;
@@ -159,12 +172,16 @@ async fn run_benchmark_inner<B: Benchmark>(
     for _ in 0..config.tasks {
         let task_sender = sender.clone();
         let task_connector = connector.clone();
+        let key_length = config.key_length;
+        let value_length = config.value_length;
         tokio::spawn(async move {
             let task_client = task_connector
                 .connect()
                 .await
                 .unwrap_or_else(|err| panic!("Connection failed: {}", err));
-            B::do_task(task_client, task_sender).await
+            let key = random_bytes(key_length);
+            let value = random_bytes(value_length);
+            B::do_task(task_client, key, value, task_sender).await
         });
     }
 
@@ -186,4 +203,8 @@ async fn run_benchmark_inner<B: Benchmark>(
             _ = interval_receiver.next() => benchmark.handle_tick(),
         }
     }
+}
+
+fn random_bytes(length: usize) -> Vec<u8> {
+    (0..length).map(|_| rand::random::<u8>()).collect()
 }

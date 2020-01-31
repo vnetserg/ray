@@ -50,18 +50,34 @@ fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
                 .default_value("0"),
         )
         .arg(
-            Arg::with_name("clients")
-                .short("c")
+            Arg::with_name("tasks")
+                .short("k")
                 .long("clients")
                 .value_name("COUNT")
-                .help("number of concurrent clients")
+                .help("number of concurrent tasks")
                 .takes_value(true)
                 .default_value("256"),
         )
-        .subcommand(
-            SubCommand::with_name("read")
-                .about("Simple read benchmark: all clients fetch the same key in a loop"),
+        .arg(
+            Arg::with_name("key_length")
+                .long("key-len")
+                .value_name("LENGTH")
+                .help("length of key on bytes")
+                .takes_value(true)
+                .default_value("8"),
         )
+        .arg(
+            Arg::with_name("value_length")
+                .long("val-len")
+                .value_name("COUNT")
+                .help("length of value in bytes")
+                .takes_value(true)
+                .default_value("256"),
+        )
+        .subcommand(SubCommand::with_name("read").about(
+            "Simple read benchmark: each client generates a random key-value pair \
+             and fetches it in a loop",
+        ))
         .subcommand(SubCommand::with_name("write").about(
             "Simple write benchmark: each client generates a random key-value pair \
              and inserts it in a loop",
@@ -72,13 +88,17 @@ fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
     let address = matches.value_of("address").unwrap().to_string();
     let port = value_t_or_exit!(matches, "port", u16);
     let threads = value_t_or_exit!(matches, "threads", u16);
-    let tasks = value_t_or_exit!(matches, "clients", u16);
+    let tasks = value_t_or_exit!(matches, "tasks", u16);
+    let key_length = value_t_or_exit!(matches, "key_length", usize);
+    let value_length = value_t_or_exit!(matches, "value_length", usize);
 
     let config = BenchmarkConfig {
         address,
         port,
         threads,
         tasks,
+        key_length,
+        value_length,
     };
 
     let kind = match matches.subcommand_name().unwrap() {
