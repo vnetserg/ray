@@ -33,6 +33,7 @@ pub struct BenchmarkConfig {
     pub port: u16,
     pub threads: u16,
     pub tasks: u16,
+    pub idle: u16,
     pub key_length: usize,
     pub value_length: usize,
 }
@@ -64,6 +65,7 @@ impl Benchmark for SimpleReadBenchmark {
             .set(key, value)
             .await
             .unwrap_or_else(|err| panic!("Set failed: {}", err));
+
         loop {
             let now = Instant::now();
             if let Err(err) = client.get("hello".into()).await {
@@ -165,6 +167,19 @@ async fn run_benchmark_inner<B: Benchmark>(
     info!("Benchmark config: {:?}", config);
 
     let connector = RayClientConnector::new(config.address.clone(), config.port);
+
+    for _ in 0..config.idle {
+        let idle_connector = connector.clone();
+        tokio::spawn(async move {
+            let mut client = idle_connector
+                .connect()
+                .await
+                .unwrap_or_else(|err| panic!("Connection failed: {}", err));
+            time::delay_for(Duration::from_secs(100_500)).await;
+            client.get(vec![]).await.unwrap();
+        });
+    }
+
     let client = connector.connect().await?;
     benchmark.setup(client).await;
 
@@ -172,8 +187,11 @@ async fn run_benchmark_inner<B: Benchmark>(
     for _ in 0..config.tasks {
         let task_sender = sender.clone();
         let task_connector = connector.clone();
-        let key_length = config.key_length;
-        let value_length = config.value_length;
+        let BenchmarkConfig {
+            key_length,
+            value_length,
+            ..
+        } = config;
         tokio::spawn(async move {
             let task_client = task_connector
                 .connect()

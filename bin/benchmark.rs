@@ -52,11 +52,20 @@ fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
         .arg(
             Arg::with_name("tasks")
                 .short("k")
-                .long("clients")
+                .long("tasks")
                 .value_name("COUNT")
                 .help("number of concurrent tasks")
                 .takes_value(true)
                 .default_value("256"),
+        )
+        .arg(
+            Arg::with_name("idle")
+                .short("i")
+                .long("idle")
+                .value_name("COUNT")
+                .help("number of idle connections")
+                .takes_value(true)
+                .default_value("0"),
         )
         .arg(
             Arg::with_name("key_length")
@@ -89,6 +98,7 @@ fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
     let port = value_t_or_exit!(matches, "port", u16);
     let threads = value_t_or_exit!(matches, "threads", u16);
     let tasks = value_t_or_exit!(matches, "tasks", u16);
+    let idle = value_t_or_exit!(matches, "idle", u16);
     let key_length = value_t_or_exit!(matches, "key_length", usize);
     let value_length = value_t_or_exit!(matches, "value_length", usize);
 
@@ -97,6 +107,7 @@ fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
         port,
         threads,
         tasks,
+        idle,
         key_length,
         value_length,
     };
