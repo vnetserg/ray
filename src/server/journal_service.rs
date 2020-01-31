@@ -3,6 +3,8 @@ use super::{
     snapshot_service::MutationProposal,
 };
 
+use crate::errors::*;
+
 use prost::Message;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -14,8 +16,6 @@ use futures::{
     stream::StreamExt,
 };
 
-use std::io;
-
 pub enum ReadResult<R, W> {
     Blob(Vec<u8>, R),
     End(W),
@@ -24,14 +24,14 @@ pub enum ReadResult<R, W> {
 pub trait JournalReader: Sized + Send + 'static {
     type Writer: JournalWriter;
 
-    fn read_blob(self) -> io::Result<ReadResult<Self, Self::Writer>>;
+    fn read_blob(self) -> Result<ReadResult<Self, Self::Writer>>;
 }
 
 pub trait JournalWriter: Send + 'static {
-    fn append_blob(&mut self, blob: &[u8]) -> io::Result<()>;
-    fn persist(&mut self) -> io::Result<()>;
+    fn append_blob(&mut self, blob: &[u8]) -> Result<()>;
+    fn persist(&mut self) -> Result<()>;
     fn get_blob_count(&self) -> usize;
-    fn dispose_oldest_blobs(&mut self, blob_count: usize) -> io::Result<()>;
+    fn dispose_oldest_blobs(&mut self, blob_count: usize) -> Result<()>;
 }
 
 pub enum JournalServiceRequest<U: Message> {
@@ -59,37 +59,32 @@ struct JournalServiceBase<M: Machine> {
 }
 
 impl<M: Machine> JournalServiceBase<M> {
-    async fn send_proposal(&mut self, mutation: M::Mutation, epoch: u64) {
+    async fn send_proposal(&mut self, mutation: M::Mutation, epoch: u64) -> Result<()> {
         self.snapshot_sender
             .unbounded_send(MutationProposal {
                 mutation: mutation.clone(),
                 epoch,
             })
-            .expect("JournalService snapshot_sender failed");
+            .chain_err(|| "snapshot_sender failed")?;
         self.machine_sender
             .send(MachineServiceRequest::Proposal { mutation, epoch })
             .await
-            .expect("JournalService machine_sender failed");
+            .chain_err(|| "machine_sender failed")
     }
 
-    async fn serve_batch(&mut self, persisted_epoch: u64) -> BatchResult<M::Mutation> {
+    async fn serve_batch(&mut self, persisted_epoch: u64) -> Result<BatchResult<M::Mutation>> {
         select! {
             maybe_min_epoch = self.min_epoch_receiver.next() => {
-                let min_epoch = maybe_min_epoch.expect("JournalService min_epoch_receiver failed");
-                return BatchResult {
+                let min_epoch = maybe_min_epoch.chain_err(|| "min_epoch_receiver failed")?;
+                return Ok(BatchResult {
                     mutations: vec![],
                     notifiers: vec![],
                     min_epoch: Some(min_epoch),
-                }
+                })
             },
             maybe_request = self.request_receiver.next() => {
-                let request = maybe_request.expect("JournalService request_receiver failed");
-                let (mutations, notifiers) = self.process_request_batch(request, persisted_epoch);
-                return BatchResult {
-                    mutations,
-                    notifiers,
-                    min_epoch: None,
-                }
+                let request = maybe_request.chain_err(|| "request_receiver failed")?;
+                self.process_request_batch(request, persisted_epoch)
             },
         }
     }
@@ -98,7 +93,7 @@ impl<M: Machine> JournalServiceBase<M> {
         &mut self,
         first: JournalServiceRequest<M::Mutation>,
         persisted_epoch: u64,
-    ) -> (Vec<M::Mutation>, Vec<oneshot::Sender<()>>) {
+    ) -> Result<BatchResult<M::Mutation>> {
         let mut mutations = vec![];
         let mut notifiers = vec![];
         let mut request = first;
@@ -119,7 +114,7 @@ impl<M: Machine> JournalServiceBase<M> {
             if processed_requests < self.batch_size {
                 match self.request_receiver.try_next() {
                     Ok(maybe_request) => {
-                        request = maybe_request.expect("JournalService request_receiver failed");
+                        request = maybe_request.chain_err(|| "request_receiver failed")?;
                     }
                     Err(_) => break,
                 }
@@ -128,7 +123,11 @@ impl<M: Machine> JournalServiceBase<M> {
             }
         }
 
-        (mutations, notifiers)
+        Ok(BatchResult {
+            mutations,
+            notifiers,
+            min_epoch: None,
+        })
     }
 }
 
@@ -162,7 +161,7 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
         }
     }
 
-    pub async fn restore(mut self) -> JournalService<R::Writer, M> {
+    pub async fn restore(mut self) -> Result<JournalService<R::Writer, M>> {
         let mut mutation_count = 0usize;
         let mut last_epoch = None;
 
@@ -170,13 +169,13 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
         let mut maybe_writer = None;
 
         while let Some(reader) = maybe_reader {
-            maybe_reader = match reader.read_blob() {
-                Ok(ReadResult::Blob(data, reader)) => {
-                    let (mutation, epoch) = Self::decode_blob(data);
-                    Self::validate_blob_epoch(epoch, self.snapshot_epoch, last_epoch);
+            maybe_reader = match reader.read_blob().chain_err(|| "failed to read blob")? {
+                ReadResult::Blob(data, reader) => {
+                    let (mutation, epoch) = Self::decode_blob(data)?;
+                    Self::validate_blob_epoch(epoch, self.snapshot_epoch, last_epoch)?;
 
                     if epoch > self.snapshot_epoch {
-                        self.base.send_proposal(mutation, epoch).await;
+                        self.base.send_proposal(mutation, epoch).await?;
                     }
 
                     last_epoch = Some(epoch);
@@ -184,19 +183,19 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
 
                     Some(reader)
                 }
-                Ok(ReadResult::End(writer)) => {
+                ReadResult::End(writer) => {
                     maybe_writer = Some(writer);
                     None
                 }
-                Err(err) => panic!("Failed to read blob: {}", err),
             };
         }
 
         let last_epoch = last_epoch.unwrap_or(0);
         if last_epoch < self.snapshot_epoch {
-            panic!(
+            bail!(
                 "Missing mutation(s): snapshot epoch {}, got mutations only up to epoch {}",
-                self.snapshot_epoch, last_epoch
+                self.snapshot_epoch,
+                last_epoch
             );
         }
 
@@ -208,35 +207,34 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
             );
         }
 
-        JournalService {
+        Ok(JournalService {
             writer: maybe_writer.unwrap(),
             persisted_epoch: last_epoch,
             base: self.base,
-        }
+        })
     }
 
-    fn decode_blob(blob: Vec<u8>) -> (M::Mutation, u64) {
+    fn decode_blob(blob: Vec<u8>) -> Result<(M::Mutation, u64)> {
         if blob.len() < 9 {
-            panic!(
+            bail!(
                 "Journal blob is too short: expected at least 9 bytes, got {}",
                 blob.len()
             );
         }
 
         let epoch = (&blob[..8]).read_u64::<LittleEndian>().unwrap();
-        let mutation = M::Mutation::decode(&blob[8..])
-            .unwrap_or_else(|err| panic!("Failed to decode mutation: {}", err));
+        let mutation = M::Mutation::decode(&blob[8..]).chain_err(|| "failed to decode mutation")?;
 
-        (mutation, epoch)
+        Ok((mutation, epoch))
     }
 
-    fn validate_blob_epoch(epoch: u64, snapshot_epoch: u64, last_epoch: Option<u64>) {
+    fn validate_blob_epoch(epoch: u64, snapshot_epoch: u64, last_epoch: Option<u64>) -> Result<()> {
         if last_epoch
             .as_ref()
             .map(|last| last + 1 != epoch)
             .unwrap_or(false)
         {
-            panic!(
+            bail!(
                 "Missing mutation(s): expected epoch {}, got {}",
                 last_epoch.unwrap() + 1,
                 epoch
@@ -244,12 +242,14 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
         }
 
         if last_epoch.is_none() && epoch > snapshot_epoch + 1 {
-            panic!(
+            bail!(
                 "Missing mutation(s): expected epoch {}, got epoch {}",
                 snapshot_epoch + 1,
                 epoch
             );
         }
+
+        Ok(())
     }
 }
 
@@ -260,27 +260,28 @@ pub struct JournalService<W: JournalWriter, M: Machine> {
 }
 
 impl<W: JournalWriter, M: Machine> JournalService<W, M> {
-    fn write_mutation(&mut self, mutation: &M::Mutation, epoch: u64) {
+    fn write_mutation(&mut self, mutation: &M::Mutation, epoch: u64) -> Result<()> {
         let mut blob = vec![0u8; 8 + mutation.encoded_len()];
         (&mut blob[..8]).write_u64::<LittleEndian>(epoch).unwrap();
         mutation
             .encode(&mut &mut blob[8..])
-            .unwrap_or_else(|err| panic!("Failed to encode mutation: {}", err));
+            .chain_err(|| "failed to encode mutation")?;
         self.writer
             .append_blob(&blob)
-            .unwrap_or_else(|err| panic!("Failed to write to journal: {}", err));
+            .chain_err(|| "journal write failed")?;
+        Ok(())
     }
 
-    pub async fn serve(&mut self) {
+    pub async fn serve(&mut self) -> Result<()> {
         loop {
             let BatchResult {
                 mutations,
                 notifiers,
                 min_epoch,
-            } = self.base.serve_batch(self.persisted_epoch).await;
+            } = self.base.serve_batch(self.persisted_epoch).await?;
 
             if let Some(min_epoch) = min_epoch {
-                self.handle_new_min_epoch(min_epoch);
+                self.handle_new_min_epoch(min_epoch)?;
             }
 
             if mutations.is_empty() {
@@ -294,12 +295,12 @@ impl<W: JournalWriter, M: Machine> JournalService<W, M> {
                 .collect();
 
             for (mutation, epoch) in proposals.iter() {
-                self.write_mutation(mutation, *epoch);
+                self.write_mutation(mutation, *epoch)?;
             }
 
             self.writer
                 .persist()
-                .unwrap_or_else(|err| panic!("Failed to persist journal: {}", err));
+                .chain_err(|| "failed to persist journal")?;
             self.persisted_epoch += proposals.len() as u64;
 
             debug!(
@@ -313,12 +314,12 @@ impl<W: JournalWriter, M: Machine> JournalService<W, M> {
             }
 
             for (mutation, epoch) in proposals.into_iter() {
-                self.base.send_proposal(mutation, epoch).await;
+                self.base.send_proposal(mutation, epoch).await?;
             }
         }
     }
 
-    fn handle_new_min_epoch(&mut self, min_epoch: u64) {
+    fn handle_new_min_epoch(&mut self, min_epoch: u64) -> Result<()> {
         assert!(min_epoch <= self.persisted_epoch + 1);
 
         let desired_len = (self.persisted_epoch + 1 - min_epoch) as usize;
@@ -327,9 +328,14 @@ impl<W: JournalWriter, M: Machine> JournalService<W, M> {
         if actual_len > desired_len {
             debug!("Disposing log entries with epoch < {}", min_epoch);
 
-            self.writer
-                .dispose_oldest_blobs(actual_len - desired_len)
-                .unwrap_or_else(|err| panic!("Failed to dispose blobs: {}", err));
+            if let Err(err) = self.writer.dispose_oldest_blobs(actual_len - desired_len) {
+                warn!(
+                    "Failed to dispose unneeded blobs (error chain below)\n{}",
+                    err.display_fancy_chain()
+                );
+            }
         }
+
+        Ok(())
     }
 }

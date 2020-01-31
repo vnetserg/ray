@@ -1,21 +1,23 @@
 use super::machine_service::Machine;
 
+use crate::errors::*;
+
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use futures::{channel::mpsc, StreamExt};
 
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 
 pub trait PersistentWrite: Write {
-    fn persist(&mut self) -> io::Result<()>;
+    fn persist(&mut self) -> Result<()>;
 }
 
 pub trait SnapshotStorage: Send + 'static {
     type Writer: PersistentWrite;
     type Reader: Read;
 
-    fn create_snapshot(&mut self, name: &str) -> io::Result<Self::Writer>;
-    fn open_last_snapshot(&self) -> io::Result<Option<Self::Reader>>;
+    fn create_snapshot(&mut self, name: &str) -> Result<Self::Writer>;
+    fn open_last_snapshot(&self) -> Result<Option<Self::Reader>>;
 }
 
 pub struct MutationProposal<U> {
@@ -23,12 +25,13 @@ pub struct MutationProposal<U> {
     pub epoch: u64,
 }
 
-pub fn read_snapshot<R: Read, M: Machine>(reader: &mut R) -> io::Result<(M, u64)> {
+pub fn read_snapshot<R: Read, M: Machine>(reader: &mut R) -> Result<(M, u64)> {
     let epoch = reader.read_u64::<LittleEndian>()?;
-    M::from_snapshot(reader).map(|machine| (machine, epoch))
+    let machine = M::from_snapshot(reader)?;
+    Ok((machine, epoch))
 }
 
-fn write_snapshot<W: Write, M: Machine>(writer: &mut W, machine: &M, epoch: u64) -> io::Result<()> {
+fn write_snapshot<W: Write, M: Machine>(writer: &mut W, machine: &M, epoch: u64) -> Result<()> {
     writer.write_u64::<LittleEndian>(epoch)?;
     machine.write_snapshot(writer)
 }
@@ -66,17 +69,20 @@ impl<S: SnapshotStorage, M: Machine> SnapshotService<S, M> {
         }
     }
 
-    pub async fn serve(&mut self) {
+    pub async fn serve(&mut self) -> Result<()> {
         loop {
-            self.apply_mutation_batch().await;
+            self.apply_mutation_batch()
+                .await
+                .chain_err(|| "failed to apply mutation batch")?;
 
             if self.epoch - self.last_snapshot_epoch >= self.snapshot_interval {
-                self.make_snapshot();
+                self.make_snapshot()
+                    .chain_err(|| format!("failed to make snapshot for epoch {}", self.epoch))?;
             }
         }
     }
 
-    pub async fn apply_mutation_batch(&mut self) {
+    pub async fn apply_mutation_batch(&mut self) -> Result<()> {
         for i in 0..self.batch_size {
             let maybe_proposal = if i == 0 {
                 self.proposal_receiver.next().await
@@ -88,7 +94,7 @@ impl<S: SnapshotStorage, M: Machine> SnapshotService<S, M> {
             };
 
             let MutationProposal { mutation, epoch } =
-                maybe_proposal.expect("SnapshotService proposal_receiver failed");
+                maybe_proposal.chain_err(|| "proposal_receiver failed")?;
 
             if epoch <= self.epoch {
                 debug!(
@@ -102,29 +108,28 @@ impl<S: SnapshotStorage, M: Machine> SnapshotService<S, M> {
             self.machine.apply_mutation(mutation);
             self.epoch += 1;
         }
+        Ok(())
     }
 
-    pub fn make_snapshot(&mut self) {
+    pub fn make_snapshot(&mut self) -> Result<()> {
         info!("Snapshot initiated (epoch: {})", self.epoch);
 
         let mut writer = self
             .storage
             .create_snapshot(&self.epoch.to_string())
-            .unwrap_or_else(|err| {
-                panic!("Failed to create snapshot '{}': {}", self.epoch, err);
-            });
+            .chain_err(|| "failed to create snapshot writer")?;
 
         write_snapshot(&mut writer, &self.machine, self.epoch)
             .and_then(|_| writer.persist())
-            .unwrap_or_else(|err| {
-                panic!("Failed to write snapshot: {}", err);
-            });
+            .chain_err(|| "snapshot write failed")?;
 
         self.min_epoch_sender
             .unbounded_send(self.epoch + 1)
-            .expect("SnapshotService min_epoch_sender failed");
+            .chain_err(|| "min_epoch_sender failed")?;
         self.last_snapshot_epoch = self.epoch;
 
         info!("Snapshot finished (epoch: {})", self.epoch);
+
+        Ok(())
     }
 }

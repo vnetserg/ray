@@ -2,7 +2,8 @@ use super::{
     config::JournalStorageConfig,
     journal_service::{JournalReader, JournalWriter, ReadResult},
 };
-use crate::util::try_read_u32;
+
+use crate::{errors::*, util::try_read_u32};
 
 use chrono::Utc;
 
@@ -28,7 +29,7 @@ impl DirectoryJournalBase {
         self.previous_files.push_back((path, blob_count));
     }
 
-    fn dispose_oldest_blobs(&mut self, mut blob_count: usize) -> io::Result<()> {
+    fn dispose_oldest_blobs(&mut self, mut blob_count: usize) -> Result<()> {
         while !self.previous_files.is_empty() && blob_count >= self.previous_files[0].1 {
             let (ref path, file_blob_count) = self.previous_files[0];
 
@@ -36,7 +37,7 @@ impl DirectoryJournalBase {
                 if err.kind() == io::ErrorKind::NotFound {
                     debug!("Journal file is already removed: {:?}", path);
                 } else {
-                    return Err(err);
+                    return Err(err).chain_err(|| format!("failed to remove {:?}", path));
                 }
             } else {
                 debug!("Removed journal file: {:?}", path);
@@ -58,13 +59,17 @@ pub struct DirectoryJournalReader {
 }
 
 impl DirectoryJournalReader {
-    pub fn new(config: &JournalStorageConfig) -> io::Result<Self> {
+    pub fn new(config: &JournalStorageConfig) -> Result<Self> {
         let directory_path = PathBuf::from(&config.path);
-        create_dir_all(directory_path.as_path())?;
+        create_dir_all(directory_path.as_path())
+            .chain_err(|| format!("failed to create directory {:?}", directory_path))?;
 
         let mut file_paths = vec![];
-        for entry in read_dir(&directory_path)? {
-            let file_path = entry?.path();
+        let dir_entries = read_dir(&directory_path)
+            .chain_err(|| format!("failed to read directory {:?}", directory_path))?;
+
+        for entry in dir_entries {
+            let file_path = entry.chain_err(|| "failed to resolve entry")?.path();
             if file_path.to_string_lossy().ends_with(".jnl") {
                 file_paths.push(file_path.to_owned());
             }
@@ -95,12 +100,15 @@ impl DirectoryJournalReader {
         Ok(reader)
     }
 
-    fn open_file(path: &Path) -> io::Result<BufReader<File>> {
-        let file = OpenOptions::new().read(true).open(path)?;
+    fn open_file(path: &Path) -> Result<BufReader<File>> {
+        let file = OpenOptions::new()
+            .read(true)
+            .open(path)
+            .chain_err(|| format!("failed to open file for read: {:?}", path))?;
         Ok(BufReader::new(file))
     }
 
-    fn read_len(&mut self) -> io::Result<Option<usize>> {
+    fn read_len(&mut self) -> Result<Option<usize>> {
         while let Some(ref mut file) = self.current_file {
             match try_read_u32(file)? {
                 None => {
@@ -126,7 +134,7 @@ impl DirectoryJournalReader {
 impl JournalReader for DirectoryJournalReader {
     type Writer = DirectoryJournalWriter;
 
-    fn read_blob(mut self) -> io::Result<ReadResult<Self, Self::Writer>> {
+    fn read_blob(mut self) -> Result<ReadResult<Self, Self::Writer>> {
         let len = match self.read_len()? {
             Some(len) => len,
             None => {
@@ -153,7 +161,7 @@ pub struct DirectoryJournalWriter {
 }
 
 impl DirectoryJournalWriter {
-    fn new(base: DirectoryJournalBase) -> io::Result<Self> {
+    fn new(base: DirectoryJournalBase) -> Result<Self> {
         let (file, file_path) = Self::open_new_file(&base.directory_path)?;
         let writer = Self {
             file,
@@ -165,29 +173,32 @@ impl DirectoryJournalWriter {
         Ok(writer)
     }
 
-    fn open_new_file(directory_path: &Path) -> io::Result<(BufWriter<File>, PathBuf)> {
+    fn open_new_file(directory_path: &Path) -> Result<(BufWriter<File>, PathBuf)> {
         let file_name = format!("{}.jnl", Utc::now().format("%+"));
         let path = Path::new(&directory_path).join(file_name);
         debug!("Starting new journal file: {:?}", path);
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&path)?;
+            .open(&path)
+            .chain_err(|| format!("failed to open file for write: {:?}", path))?;
         Ok((BufWriter::new(file), path))
     }
 }
 
 impl JournalWriter for DirectoryJournalWriter {
-    fn append_blob(&mut self, blob: &[u8]) -> io::Result<()> {
+    fn append_blob(&mut self, blob: &[u8]) -> Result<()> {
         assert!(blob.len() >> 32 == 0);
         self.current_file_size += blob.len() + 4;
         self.current_file_blob_count += 1;
         self.file
             .write_u32::<LittleEndian>(blob.len() as u32)
             .and_then(|_| self.file.write_all(blob))
+            .chain_err(|| format!("failed to write to {:?}", self.file_path))?;
+        Ok(())
     }
 
-    fn persist(&mut self) -> io::Result<()> {
+    fn persist(&mut self) -> Result<()> {
         self.file.flush()?;
         self.file.get_ref().sync_data()?;
         if self.current_file_size >= self.base.file_size_soft_limit {
@@ -207,7 +218,7 @@ impl JournalWriter for DirectoryJournalWriter {
         self.base.total_blob_count + self.current_file_blob_count
     }
 
-    fn dispose_oldest_blobs(&mut self, blob_count: usize) -> io::Result<()> {
+    fn dispose_oldest_blobs(&mut self, blob_count: usize) -> Result<()> {
         if blob_count > self.current_file_blob_count {
             self.base
                 .dispose_oldest_blobs(blob_count - self.current_file_blob_count)

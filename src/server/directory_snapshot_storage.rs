@@ -1,5 +1,7 @@
 use super::snapshot_service::{PersistentWrite, SnapshotStorage};
 
+use crate::errors::*;
+
 use chrono::Utc;
 
 use std::{
@@ -23,9 +25,10 @@ impl Write for SnapshotWriter {
 }
 
 impl PersistentWrite for SnapshotWriter {
-    fn persist(&mut self) -> io::Result<()> {
+    fn persist(&mut self) -> Result<()> {
         self.buffer.flush()?;
-        self.buffer.get_ref().sync_data()
+        self.buffer.get_ref().sync_data()?;
+        Ok(())
     }
 }
 
@@ -45,22 +48,30 @@ impl SnapshotStorage for DirectorySnapshotStorage {
     type Writer = SnapshotWriter;
     type Reader = BufReader<File>;
 
-    fn create_snapshot(&mut self, name: &str) -> io::Result<Self::Writer> {
+    fn create_snapshot(&mut self, name: &str) -> Result<Self::Writer> {
         let file_name = format!("{}_{}.snap", Utc::now().format("%+"), name);
         let path = Path::new(&self.path).join(file_name);
         debug!("Creating snapshot file: {:?}", path);
 
-        let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .chain_err(|| format!("failed to open file for write: {:?}", path))?;
         let buffer = BufWriter::new(file);
         let writer = SnapshotWriter { buffer };
 
         Ok(writer)
     }
 
-    fn open_last_snapshot(&self) -> io::Result<Option<Self::Reader>> {
+    fn open_last_snapshot(&self) -> Result<Option<Self::Reader>> {
         let mut latest = None;
-        for entry in read_dir(&self.path)? {
-            let path = entry?.path();
+        let dir_entries = read_dir(&self.path)
+            .chain_err(|| format!("failed to read directory {:?}", self.path))?;
+        for entry in dir_entries {
+            let path = entry
+                .chain_err(|| "failed to resolve directory entry")?
+                .path();
             if path.is_file()
                 && path.to_string_lossy().ends_with(".snap")
                 && latest.as_ref().map(|prev| *prev < path).unwrap_or(true)
@@ -68,9 +79,12 @@ impl SnapshotStorage for DirectorySnapshotStorage {
                 latest = Some(path.to_owned());
             }
         }
-        if let Some(path) = latest {
+        if let Some(ref path) = latest {
             debug!("Latest snapshot found: {:?}", path);
-            let file = OpenOptions::new().read(true).open(path)?;
+            let file = OpenOptions::new()
+                .read(true)
+                .open(path)
+                .chain_err(|| format!("failed to open file for read: {:?}", path))?;
             let reader = BufReader::new(file);
             Ok(Some(reader))
         } else {

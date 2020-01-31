@@ -1,5 +1,7 @@
 use super::journal_service::JournalServiceRequest;
 
+use crate::errors::*;
+
 use prost::Message;
 
 use futures::{
@@ -12,7 +14,7 @@ use std::{
     cmp::{self, Ordering},
     collections::BinaryHeap,
     fmt::Display,
-    io::{self, Read, Write},
+    io::{Read, Write},
 };
 
 pub trait Machine: Default + Clone + Send + 'static {
@@ -22,8 +24,8 @@ pub trait Machine: Default + Clone + Send + 'static {
 
     fn apply_mutation(&mut self, mutation: Self::Mutation);
     fn query_state(&self, query: Self::Query) -> Self::Status;
-    fn write_snapshot<T: Write>(&self, writer: &mut T) -> io::Result<()>;
-    fn from_snapshot<T: Read>(reader: &mut T) -> io::Result<Self>;
+    fn write_snapshot<T: Write>(&self, writer: &mut T) -> Result<()>;
+    fn from_snapshot<T: Read>(reader: &mut T) -> Result<Self>;
 }
 
 pub enum MachineServiceRequest<M: Machine> {
@@ -55,7 +57,7 @@ impl<M: Machine> MachineServiceHandle<M> {
         }
     }
 
-    pub async fn apply_mutation(&mut self, mutation: M::Mutation) {
+    pub async fn apply_mutation(&mut self, mutation: M::Mutation) -> Result<()> {
         let (sender, receiver) = oneshot::channel();
         let request = JournalServiceRequest::PersistMutation {
             mutation,
@@ -64,26 +66,26 @@ impl<M: Machine> MachineServiceHandle<M> {
         self.journal_sender
             .send(request)
             .await
-            .expect("MachinsServiceHandle journal_sender failed");
-        receiver.await.expect("sender dropped");
+            .chain_err(|| "journal_sender failed")?;
+        receiver.await.chain_err(|| "sender dropped")
     }
 
-    pub async fn query_state(&mut self, query: M::Query) -> M::Status {
-        let epoch = self.get_persisted_epoch().await;
+    pub async fn query_state(&mut self, query: M::Query) -> Result<M::Status> {
+        let epoch = self.get_persisted_epoch().await?;
         self.query_state_after(query, epoch).await
     }
 
-    async fn get_persisted_epoch(&mut self) -> u64 {
+    async fn get_persisted_epoch(&mut self) -> Result<u64> {
         let (epoch_sender, epoch_receiver) = oneshot::channel();
         let request = JournalServiceRequest::GetPersistedEpoch { epoch_sender };
         self.journal_sender
             .send(request)
             .await
-            .expect("MachinsServiceHandle journal_sender failed");
-        epoch_receiver.await.expect("sender dropped")
+            .chain_err(|| "journal_sender failed")?;
+        epoch_receiver.await.chain_err(|| "sender dropped")
     }
 
-    async fn query_state_after(&mut self, query: M::Query, epoch: u64) -> M::Status {
+    async fn query_state_after(&mut self, query: M::Query, epoch: u64) -> Result<M::Status> {
         let (sender, receiver) = oneshot::channel();
         let request = MachineServiceRequest::Query {
             query,
@@ -93,8 +95,8 @@ impl<M: Machine> MachineServiceHandle<M> {
         self.machine_sender
             .send(request)
             .await
-            .expect("machine_receiver dropped");
-        receiver.await.expect("sender dropped")
+            .chain_err(|| "machine_receiver dropped")?;
+        receiver.await.chain_err(|| "sender dropped")
     }
 }
 
@@ -146,13 +148,13 @@ impl<M: Machine> MachineService<M> {
         }
     }
 
-    pub async fn serve(&mut self) {
+    pub async fn serve(&mut self) -> Result<()> {
         loop {
             match self
                 .request_receiver
                 .next()
                 .await
-                .expect("MachineService request_receiver failed")
+                .chain_err(|| "request_receiver failed")?
             {
                 MachineServiceRequest::Proposal { mutation, epoch } => {
                     self.handle_proposal(mutation, epoch).await;

@@ -1,4 +1,4 @@
-use crate::{proto, server::machine_service::Machine, util::try_read_u32};
+use crate::{errors::*, proto, server::machine_service::Machine, util::try_read_u32};
 
 use prost::Message;
 
@@ -6,7 +6,7 @@ use byteorder::{LittleEndian, WriteBytesExt};
 
 use std::{
     collections::HashMap,
-    io::{self, Read, Write},
+    io::{Read, Write},
 };
 
 #[derive(Default, Clone)]
@@ -32,7 +32,7 @@ impl Machine for StorageMachine {
             .unwrap_or_else(|| Vec::new().into_boxed_slice())
     }
 
-    fn write_snapshot<T: Write>(&self, writer: &mut T) -> io::Result<()> {
+    fn write_snapshot<T: Write>(&self, writer: &mut T) -> Result<()> {
         for (key, value) in self.map.iter() {
             let set = proto::SetRequest {
                 key: key.to_vec(),
@@ -46,8 +46,7 @@ impl Machine for StorageMachine {
             (&mut buf[..4])
                 .write_u32::<LittleEndian>(len as u32)
                 .unwrap();
-            set.encode(&mut &mut buf[4..])
-                .expect("Failed to encode proto message");
+            set.encode(&mut &mut buf[4..])?;
 
             writer.write_all(&buf)?;
         }
@@ -55,16 +54,28 @@ impl Machine for StorageMachine {
         Ok(())
     }
 
-    fn from_snapshot<T: Read>(reader: &mut T) -> io::Result<Self> {
+    fn from_snapshot<T: Read>(reader: &mut T) -> Result<Self> {
         let mut machine = Self::default();
+        let mut index = 0;
+        let mut offset = 0;
 
         while let Some(len) = try_read_u32(reader)? {
             let mut buffer = vec![0; len];
             reader.read_exact(&mut buffer)?;
-            let set = proto::SetRequest::decode(&buffer[..])?;
+
+            let set = proto::SetRequest::decode(&buffer[..]).chain_err(|| {
+                format!(
+                    "failed to decode mutation (index: {}, offset: {})",
+                    index, offset
+                )
+            })?;
+
             let key = set.key.into_boxed_slice();
             let value = set.value.into_boxed_slice();
             machine.map.insert(key, value);
+
+            index += 1;
+            offset += 4 + buffer.len();
         }
 
         Ok(machine)
