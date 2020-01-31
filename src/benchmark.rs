@@ -15,11 +15,11 @@ pub trait Benchmark: 'static {
 
     type Message: Send + 'static;
 
-    async fn setup(&mut self, client: RayClient);
     async fn do_task(
         client: RayClient,
         key: Vec<u8>,
         value: Vec<u8>,
+        delay: Duration,
         sender: mpsc::UnboundedSender<Self::Message>,
     );
 
@@ -36,6 +36,7 @@ pub struct BenchmarkConfig {
     pub idle: u16,
     pub key_length: usize,
     pub value_length: usize,
+    pub delay: Duration,
 }
 
 #[derive(Default)]
@@ -46,19 +47,14 @@ pub struct SimpleReadBenchmark {
 #[tonic::async_trait]
 impl Benchmark for SimpleReadBenchmark {
     const NAME: &'static str = "simple read";
-    type Message = f64;
 
-    async fn setup(&mut self, mut client: RayClient) {
-        client
-            .set("hello".into(), "world".into())
-            .await
-            .unwrap_or_else(|err| panic!("failed to set key: {}", err));
-    }
+    type Message = f64;
 
     async fn do_task(
         mut client: RayClient,
         key: Vec<u8>,
         value: Vec<u8>,
+        delay: Duration,
         sender: mpsc::UnboundedSender<Self::Message>,
     ) {
         client
@@ -74,6 +70,8 @@ impl Benchmark for SimpleReadBenchmark {
             }
             let elapsed = now.elapsed();
             sender.unbounded_send(elapsed.as_secs_f64()).unwrap();
+
+            time::delay_for(delay).await;
         }
     }
 
@@ -102,14 +100,14 @@ pub struct SimpleWriteBenchmark {
 #[tonic::async_trait]
 impl Benchmark for SimpleWriteBenchmark {
     const NAME: &'static str = "simple write";
-    type Message = f64;
 
-    async fn setup(&mut self, _client: RayClient) {}
+    type Message = f64;
 
     async fn do_task(
         mut client: RayClient,
         key: Vec<u8>,
         value: Vec<u8>,
+        delay: Duration,
         sender: mpsc::UnboundedSender<Self::Message>,
     ) {
         loop {
@@ -119,7 +117,10 @@ impl Benchmark for SimpleWriteBenchmark {
                 continue;
             }
             let elapsed = now.elapsed();
+
             sender.unbounded_send(elapsed.as_secs_f64()).unwrap();
+
+            time::delay_for(delay).await;
         }
     }
 
@@ -180,9 +181,6 @@ async fn run_benchmark_inner<B: Benchmark>(
         });
     }
 
-    let client = connector.connect().await?;
-    benchmark.setup(client).await;
-
     let (sender, mut receiver) = mpsc::unbounded();
     for _ in 0..config.tasks {
         let task_sender = sender.clone();
@@ -190,6 +188,7 @@ async fn run_benchmark_inner<B: Benchmark>(
         let BenchmarkConfig {
             key_length,
             value_length,
+            delay,
             ..
         } = config;
         tokio::spawn(async move {
@@ -199,7 +198,7 @@ async fn run_benchmark_inner<B: Benchmark>(
                 .unwrap_or_else(|err| panic!("Connection failed: {}", err));
             let key = random_bytes(key_length);
             let value = random_bytes(value_length);
-            B::do_task(task_client, key, value, task_sender).await
+            B::do_task(task_client, key, value, delay, task_sender).await
         });
     }
 

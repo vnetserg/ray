@@ -8,6 +8,8 @@ use clap::{value_t_or_exit, App, AppSettings, Arg, SubCommand};
 use log::LevelFilter;
 use simplelog::{LevelPadding, SimpleLogger};
 
+use std::time::Duration;
+
 const ABOUT: &str = "Ray benchmark tool";
 
 enum BenchmarkKind {
@@ -83,6 +85,15 @@ fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
                 .takes_value(true)
                 .default_value("256"),
         )
+        .arg(
+            Arg::with_name("delay")
+                .short("d")
+                .long("delay")
+                .value_name("MICROSECONDS")
+                .help("delay between requests")
+                .takes_value(true)
+                .default_value("0"),
+        )
         .subcommand(SubCommand::with_name("read").about(
             "Simple read benchmark: each client generates a random key-value pair \
              and fetches it in a loop",
@@ -101,6 +112,8 @@ fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
     let idle = value_t_or_exit!(matches, "idle", u16);
     let key_length = value_t_or_exit!(matches, "key_length", usize);
     let value_length = value_t_or_exit!(matches, "value_length", usize);
+    let delay_micros = value_t_or_exit!(matches, "delay", u64);
+    let delay = Duration::from_micros(delay_micros);
 
     let config = BenchmarkConfig {
         address,
@@ -110,6 +123,7 @@ fn parse_arguments() -> (BenchmarkConfig, BenchmarkKind) {
         idle,
         key_length,
         value_length,
+        delay,
     };
 
     let kind = match matches.subcommand_name().unwrap() {
