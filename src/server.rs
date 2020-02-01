@@ -9,7 +9,7 @@ mod storage_machine;
 
 pub use config::Config;
 
-use config::{LoggingConfig, LoggingTarget, PsmConfig};
+use config::{LoggingConfig, LoggingTarget, MetricsConfig, PsmConfig};
 use directory_journal::DirectoryJournalReader;
 use directory_snapshot_storage::DirectorySnapshotStorage;
 use journal_service::{JournalReader, JournalServiceRestorer};
@@ -29,6 +29,8 @@ use simplelog::{
     CombinedLogger, LevelPadding, SharedLogger, TermLogger, TerminalMode, WriteLogger,
 };
 
+use metrics_runtime::{exporters::HttpExporter, observers::PrometheusBuilder, Receiver};
+
 use std::{
     fs,
     future::Future,
@@ -47,6 +49,14 @@ pub fn serve_forever(config: Config) -> ! {
         exit(1);
     });
 
+    init_metrics(&config.metrics).unwrap_or_else(|err| {
+        eprintln!(
+            "Failed to initialize metrics (error chain below)\n{}",
+            err.display_fancy_chain()
+        );
+        exit(1);
+    });
+
     start_server(config).unwrap_or_else(|err| {
         error!(
             "Failed to start server (error chain below)\n{}",
@@ -56,6 +66,70 @@ pub fn serve_forever(config: Config) -> ! {
     });
 
     exit(0);
+}
+
+fn init_logging(configs: &[LoggingConfig]) -> Result<()> {
+    let sl_config = simplelog::ConfigBuilder::new()
+        .add_filter_allow_str("ray")
+        .add_filter_allow_str("log_panics")
+        .set_time_format_str("%F %T%.3f")
+        .set_target_level(LevelFilter::Error)
+        .set_thread_level(LevelFilter::Off)
+        .set_level_padding(LevelPadding::Off)
+        .build();
+
+    let mut loggers = vec![];
+    for config in configs {
+        let logger: Box<dyn SharedLogger> = match &config.target {
+            LoggingTarget::Stderr => {
+                TermLogger::new(config.level.into(), sl_config.clone(), TerminalMode::Mixed)
+                    .chain_err(|| "failed to initialize terminal logger")?
+            }
+            LoggingTarget::File { path } => {
+                let maybe_file = fs::OpenOptions::new().append(true).create(true).open(path);
+                let file = maybe_file.chain_err(|| format!("failed to open {}", path))?;
+                WriteLogger::new(config.level.into(), sl_config.clone(), file)
+            }
+        };
+        loggers.push(logger);
+    }
+
+    CombinedLogger::init(loggers).chain_err(|| "failed to initialize combined lobber")?;
+
+    log_panics::init();
+
+    Ok(())
+}
+
+fn init_metrics(config: &MetricsConfig) -> Result<()> {
+    if !config.enable {
+        return Ok(());
+    }
+
+    let receiver = Receiver::builder()
+        .build()
+        .chain_err(|| "failed to create metrics receiver")?;
+
+    let address = config
+        .address
+        .parse()
+        .chain_err(|| format!("not a valid IP address: {}", config.address))?;
+    let server = HttpExporter::new(
+        receiver.controller(),
+        PrometheusBuilder::new(),
+        SocketAddr::new(address, config.port),
+    );
+
+    receiver.install();
+
+    run_in_dedicated_thread("rayd-metrics", RuntimeKind::WithIo, async move {
+        server
+            .async_run()
+            .await
+            .chain_err(|| "failed to run metrics server")
+    })?;
+
+    Ok(())
 }
 
 fn start_server(config: Config) -> Result<()> {
@@ -98,39 +172,6 @@ fn start_server(config: Config) -> Result<()> {
     runtime.block_on(server).chain_err(|| "RPC service failed")
 }
 
-fn init_logging(configs: &[LoggingConfig]) -> Result<()> {
-    let sl_config = simplelog::ConfigBuilder::new()
-        .add_filter_allow_str("ray")
-        .add_filter_allow_str("log_panics")
-        .set_time_format_str("%F %T%.3f")
-        .set_target_level(LevelFilter::Error)
-        .set_thread_level(LevelFilter::Off)
-        .set_level_padding(LevelPadding::Off)
-        .build();
-
-    let mut loggers = vec![];
-    for config in configs {
-        let logger: Box<dyn SharedLogger> = match &config.target {
-            LoggingTarget::Stderr => {
-                TermLogger::new(config.level.into(), sl_config.clone(), TerminalMode::Mixed)
-                    .chain_err(|| "failed to initialize terminal logger")?
-            }
-            LoggingTarget::File { path } => {
-                let maybe_file = fs::OpenOptions::new().append(true).create(true).open(path);
-                let file = maybe_file.chain_err(|| format!("failed to open {}", path))?;
-                WriteLogger::new(config.level.into(), sl_config.clone(), file)
-            }
-        };
-        loggers.push(logger);
-    }
-
-    CombinedLogger::init(loggers).chain_err(|| "failed to initialize combined lobber")?;
-
-    log_panics::init();
-
-    Ok(())
-}
-
 fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
     journal_reader: R,
     storage: S,
@@ -164,7 +205,7 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
     };
 
     let journal_batch_size = journal_config.batch_size;
-    run_in_dedicated_thread("rayd-journal", async move {
+    run_in_dedicated_thread("rayd-journal", RuntimeKind::Basic, async move {
         let restorer = JournalServiceRestorer::<R, M>::new(
             journal_reader,
             machine_sender,
@@ -181,7 +222,7 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
     let snapshot_machine = machine.clone();
     let snapshot_interval = snapshot_config.snapshot_interval;
     let snapshot_batch_size = snapshot_config.batch_size;
-    run_in_dedicated_thread("rayd-snapshot", async move {
+    run_in_dedicated_thread("rayd-snapshot", RuntimeKind::Basic, async move {
         let mut snapshot_service = SnapshotService::<S, M>::new(
             storage,
             snapshot_machine,
@@ -194,7 +235,7 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
         snapshot_service.serve().await
     })?;
 
-    run_in_dedicated_thread("rayd-machine", async move {
+    run_in_dedicated_thread("rayd-machine", RuntimeKind::Basic, async move {
         let mut machine_service = MachineService::new(machine, machine_receiver, epoch);
         machine_service.serve().await
     })?;
@@ -202,20 +243,29 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
     Ok(handle)
 }
 
+enum RuntimeKind {
+    Basic,
+    WithIo,
+}
+
 fn run_in_dedicated_thread<T: Future<Output = Result<()>> + Send + 'static>(
     thread_name: &'static str,
+    kind: RuntimeKind,
     task: T,
 ) -> Result<()> {
     let thread = thread::Builder::new()
         .name(thread_name.to_string())
         .spawn(move || {
-            let mut runtime = runtime::Builder::new()
-                .basic_scheduler()
-                .build()
-                .unwrap_or_else(|err| {
-                    error!("Failed to build Tokio runtime: {}", err);
-                    exit(1);
-                });
+            let mut builder = runtime::Builder::new();
+            builder.basic_scheduler();
+            if let RuntimeKind::WithIo = kind {
+                builder.enable_io();
+            }
+
+            let mut runtime = builder.build().unwrap_or_else(|err| {
+                error!("Failed to build Tokio runtime: {}", err);
+                exit(1);
+            });
 
             let result = catch_unwind(AssertUnwindSafe(move || runtime.block_on(task)));
 

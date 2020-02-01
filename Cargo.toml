@@ -28,6 +28,9 @@ futures = "0.3"
 libc = "0.2"
 log = { version = "0.4", features = ["release_max_level_info"] }
 log-panics = { version = "2.0", features = ["with-backtrace"] }
+metrics = "0.12"
+metrics-core = "0.5"
+metrics-runtime = "0.13"
 num_cpus = "1.11"
 prost = "0.6"
 rand = "0.7"

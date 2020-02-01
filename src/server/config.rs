@@ -9,6 +9,7 @@ pub struct Config {
     pub journal_storage: JournalStorageConfig,
     pub snapshot_storage: SnapshotStorageConfig,
     pub logging: Vec<LoggingConfig>,
+    pub metrics: MetricsConfig,
 }
 
 impl Default for Config {
@@ -22,6 +23,7 @@ impl Default for Config {
                 target: LoggingTarget::Stderr,
                 level: LogLevel::Info,
             }],
+            metrics: MetricsConfig::default(),
         }
     }
 }
@@ -166,6 +168,24 @@ impl From<LogLevel> for LevelFilter {
             LogLevel::Info => LevelFilter::Info,
             LogLevel::Warn => LevelFilter::Warn,
             LogLevel::Error => LevelFilter::Error,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MetricsConfig {
+    pub enable: bool,
+    pub address: String,
+    pub port: u16,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            address: "127.0.0.1".into(),
+            port: 40000,
         }
     }
 }

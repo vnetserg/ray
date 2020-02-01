@@ -1,5 +1,7 @@
 use super::{machine_service::MachineServiceHandle, storage_machine::StorageMachine};
 
+use metrics::counter;
+
 use crate::proto::{storage_server::Storage, GetReply, GetRequest, SetReply, SetRequest};
 
 use tonic::{Code, Request, Response, Status};
@@ -17,6 +19,8 @@ impl RayStorageService {
 #[tonic::async_trait]
 impl Storage for RayStorageService {
     async fn set(&self, request: Request<SetRequest>) -> Result<Response<SetReply>, Status> {
+        counter!("rpc.request_count", 1, "method" => "set");
+
         let remote_addr = request
             .remote_addr()
             .ok_or_else(|| Status::new(Code::Aborted, "unknown IP"))?;
@@ -39,6 +43,8 @@ impl Storage for RayStorageService {
     }
 
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetReply>, Status> {
+        counter!("rpc.request_count", 1, "method" => "get");
+
         let remote_addr = request
             .remote_addr()
             .ok_or_else(|| Status::new(Code::Aborted, "unknown IP"))?;
