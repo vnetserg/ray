@@ -3,7 +3,7 @@ use super::{
     snapshot_service::MutationProposal,
 };
 
-use crate::errors::*;
+use crate::{errors::*, util::{ProfiledSender, ProfiledReceiver}};
 
 use prost::Message;
 
@@ -57,9 +57,9 @@ struct BatchResult<U> {
 }
 
 struct JournalServiceBase<M: Machine> {
-    machine_sender: mpsc::Sender<MachineServiceRequest<M>>,
+    machine_sender: ProfiledSender<MachineServiceRequest<M>>,
     snapshot_sender: mpsc::UnboundedSender<MutationProposal<M::Mutation>>,
-    request_receiver: mpsc::Receiver<JournalServiceRequest<M::Mutation>>,
+    request_receiver: ProfiledReceiver<JournalServiceRequest<M::Mutation>>,
     min_epoch_receiver: mpsc::UnboundedReceiver<u64>,
     batch_size: usize,
 }
@@ -144,9 +144,9 @@ pub struct JournalServiceRestorer<R: JournalReader, M: Machine> {
 impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
     pub fn new(
         reader: R,
-        machine_sender: mpsc::Sender<MachineServiceRequest<M>>,
+        machine_sender: ProfiledSender<MachineServiceRequest<M>>,
         snapshot_sender: mpsc::UnboundedSender<MutationProposal<M::Mutation>>,
-        request_receiver: mpsc::Receiver<JournalServiceRequest<M::Mutation>>,
+        request_receiver: ProfiledReceiver<JournalServiceRequest<M::Mutation>>,
         min_epoch_receiver: mpsc::UnboundedReceiver<u64>,
         batch_size: usize,
         snapshot_epoch: u64,

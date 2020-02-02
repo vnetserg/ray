@@ -1,10 +1,10 @@
 use super::journal_service::JournalServiceRequest;
 
-use crate::errors::*;
+use crate::{errors::*, util::{ProfiledSender, ProfiledReceiver}};
 
 use prost::Message;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 use std::{
     cmp::{self, Ordering},
@@ -45,14 +45,14 @@ impl<M: Machine> Debug for MachineServiceRequest<M> {
 
 #[derive(Clone)]
 pub struct MachineServiceHandle<M: Machine> {
-    journal_sender: mpsc::Sender<JournalServiceRequest<M::Mutation>>,
-    machine_sender: mpsc::Sender<MachineServiceRequest<M>>,
+    journal_sender: ProfiledSender<JournalServiceRequest<M::Mutation>>,
+    machine_sender: ProfiledSender<MachineServiceRequest<M>>,
 }
 
 impl<M: Machine> MachineServiceHandle<M> {
     pub fn new(
-        journal_sender: mpsc::Sender<JournalServiceRequest<M::Mutation>>,
-        machine_sender: mpsc::Sender<MachineServiceRequest<M>>,
+        journal_sender: ProfiledSender<JournalServiceRequest<M::Mutation>>,
+        machine_sender: ProfiledSender<MachineServiceRequest<M>>,
     ) -> Self {
         Self {
             journal_sender,
@@ -132,7 +132,7 @@ impl<M: Machine> cmp::Ord for QueryPqItem<M> {
 
 pub struct MachineService<M: Machine> {
     machine: M,
-    request_receiver: mpsc::Receiver<MachineServiceRequest<M>>,
+    request_receiver: ProfiledReceiver<MachineServiceRequest<M>>,
     epoch: u64,
     query_queue: BinaryHeap<QueryPqItem<M>>,
 }
@@ -140,7 +140,7 @@ pub struct MachineService<M: Machine> {
 impl<M: Machine> MachineService<M> {
     pub fn new(
         machine: M,
-        request_receiver: mpsc::Receiver<MachineServiceRequest<M>>,
+        request_receiver: ProfiledReceiver<MachineServiceRequest<M>>,
         epoch: u64,
     ) -> Self {
         Self {
