@@ -4,16 +4,12 @@ use crate::errors::*;
 
 use prost::Message;
 
-use futures::{
-    channel::{mpsc, oneshot},
-    sink::SinkExt,
-    stream::StreamExt,
-};
+use tokio::sync::{mpsc, oneshot};
 
 use std::{
     cmp::{self, Ordering},
     collections::BinaryHeap,
-    fmt::Display,
+    fmt::{self, Debug, Display},
     io::{Read, Write},
 };
 
@@ -38,6 +34,13 @@ pub enum MachineServiceRequest<M: Machine> {
         mutation: M::Mutation,
         epoch: u64,
     },
+}
+
+// Only need Debug to make tokio::sync::mpsc::errors::SendError<_> implement Error.
+impl<M: Machine> Debug for MachineServiceRequest<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MachineServiceRequest")
+    }
 }
 
 #[derive(Clone)]
@@ -152,7 +155,7 @@ impl<M: Machine> MachineService<M> {
         loop {
             match self
                 .request_receiver
-                .next()
+                .recv()
                 .await
                 .chain_err(|| "request_receiver failed")?
             {

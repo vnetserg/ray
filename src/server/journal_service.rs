@@ -9,12 +9,11 @@ use prost::Message;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use futures::{
-    channel::{mpsc, oneshot},
-    select,
-    sink::SinkExt,
-    stream::StreamExt,
-};
+use tokio::sync::{mpsc, oneshot};
+
+use futures::{select, FutureExt};
+
+use std::fmt::{self, Debug};
 
 pub enum ReadResult<R, W> {
     Blob(Vec<u8>, R),
@@ -44,6 +43,13 @@ pub enum JournalServiceRequest<U: Message> {
     },
 }
 
+// Only need Debug to make tokio::sync::mpsc::errors::SendError<_> implement Error.
+impl<U: Message> Debug for JournalServiceRequest<U> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "JournalServiceRequest")
+    }
+}
+
 struct BatchResult<U> {
     mutations: Vec<U>,
     notifiers: Vec<oneshot::Sender<()>>,
@@ -61,7 +67,7 @@ struct JournalServiceBase<M: Machine> {
 impl<M: Machine> JournalServiceBase<M> {
     async fn send_proposal(&mut self, mutation: M::Mutation, epoch: u64) -> Result<()> {
         self.snapshot_sender
-            .unbounded_send(MutationProposal {
+            .send(MutationProposal {
                 mutation: mutation.clone(),
                 epoch,
             })
@@ -74,7 +80,7 @@ impl<M: Machine> JournalServiceBase<M> {
 
     async fn serve_batch(&mut self, persisted_epoch: u64) -> Result<BatchResult<M::Mutation>> {
         select! {
-            maybe_min_epoch = self.min_epoch_receiver.next() => {
+            maybe_min_epoch = self.min_epoch_receiver.recv().fuse() => {
                 let min_epoch = maybe_min_epoch.chain_err(|| "min_epoch_receiver failed")?;
                 return Ok(BatchResult {
                     mutations: vec![],
@@ -82,7 +88,7 @@ impl<M: Machine> JournalServiceBase<M> {
                     min_epoch: Some(min_epoch),
                 })
             },
-            maybe_request = self.request_receiver.next() => {
+            maybe_request = self.request_receiver.recv().fuse() => {
                 let request = maybe_request.chain_err(|| "request_receiver failed")?;
                 self.process_request_batch(request, persisted_epoch)
             },
@@ -112,12 +118,10 @@ impl<M: Machine> JournalServiceBase<M> {
             processed_requests += 1;
 
             if processed_requests < self.batch_size {
-                match self.request_receiver.try_next() {
-                    Ok(maybe_request) => {
-                        request = maybe_request.chain_err(|| "request_receiver failed")?;
-                    }
+                request = match self.request_receiver.try_recv() {
+                    Ok(req) => req,
                     Err(_) => break,
-                }
+                };
             } else {
                 break;
             }

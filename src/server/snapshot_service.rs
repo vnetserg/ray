@@ -4,7 +4,7 @@ use crate::errors::*;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use futures::{channel::mpsc, StreamExt};
+use tokio::sync::mpsc;
 
 use std::io::{Read, Write};
 
@@ -20,6 +20,7 @@ pub trait SnapshotStorage: Send + 'static {
     fn open_last_snapshot(&self) -> Result<Option<Self::Reader>>;
 }
 
+#[derive(Debug)]
 pub struct MutationProposal<U> {
     pub mutation: U,
     pub epoch: u64,
@@ -84,17 +85,19 @@ impl<S: SnapshotStorage, M: Machine> SnapshotService<S, M> {
 
     pub async fn apply_mutation_batch(&mut self) -> Result<()> {
         for i in 0..self.batch_size {
-            let maybe_proposal = if i == 0 {
-                self.proposal_receiver.next().await
+            let proposal = if i == 0 {
+                self.proposal_receiver
+                    .recv()
+                    .await
+                    .chain_err(|| "proposal_receiver failed")?
             } else {
-                match self.proposal_receiver.try_next() {
-                    Ok(maybe_proposal) => maybe_proposal,
+                match self.proposal_receiver.try_recv() {
+                    Ok(proposal) => proposal,
                     Err(_) => break,
                 }
             };
 
-            let MutationProposal { mutation, epoch } =
-                maybe_proposal.chain_err(|| "proposal_receiver failed")?;
+            let MutationProposal { mutation, epoch } = proposal;
 
             if epoch <= self.epoch {
                 debug!(
@@ -124,7 +127,7 @@ impl<S: SnapshotStorage, M: Machine> SnapshotService<S, M> {
             .chain_err(|| "snapshot write failed")?;
 
         self.min_epoch_sender
-            .unbounded_send(self.epoch + 1)
+            .send(self.epoch + 1)
             .chain_err(|| "min_epoch_sender failed")?;
         self.last_snapshot_epoch = self.epoch;
 

@@ -19,9 +19,7 @@ use snapshot_service::{read_snapshot, SnapshotService, SnapshotStorage};
 
 use crate::{errors::*, proto::storage_server::StorageServer};
 
-use futures::channel::mpsc;
-
-use tokio::runtime;
+use tokio::{runtime, sync::mpsc};
 use tonic::transport::Server;
 
 use log::LevelFilter;
@@ -183,8 +181,8 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
 
     let (journal_sender, journal_receiver) = mpsc::channel(journal_config.request_queue_size);
     let (machine_sender, machine_receiver) = mpsc::channel(machine_config.request_queue_size);
-    let (snapshot_sender, snapshot_receiver) = mpsc::unbounded();
-    let (min_epoch_sender, min_epoch_receiver) = mpsc::unbounded();
+    let (snapshot_sender, snapshot_receiver) = mpsc::unbounded_channel();
+    let (min_epoch_sender, min_epoch_receiver) = mpsc::unbounded_channel();
 
     let handle = MachineServiceHandle::new(journal_sender, machine_sender.clone());
     let snapshot = storage
