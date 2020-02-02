@@ -137,7 +137,7 @@ fn start_server(config: Config) -> Result<()> {
         .rpc
         .address
         .parse()
-        .chain_err(|| format!("'{}' is not a valid IP address", config.rpc.address))?;
+        .chain_err(|| format!("not a valid IP address: {}", config.rpc.address))?;
     let socket_address = SocketAddr::new(ip_address, config.rpc.port);
 
     let journal_reader = DirectoryJournalReader::new(&config.journal_storage)

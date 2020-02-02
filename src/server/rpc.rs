@@ -8,6 +8,8 @@ use tonic::{Code, Request, Response, Status};
 
 use std::{
     fmt::{Debug, Display},
+    future::Future,
+    pin::Pin,
     time::Instant,
 };
 
@@ -108,13 +110,29 @@ impl RayStorageService {
     }
 }
 
-#[tonic::async_trait]
+type BoxedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+// Don't use async_trait macro to avoid one excessive heap allocation.
 impl Storage for RayStorageService {
-    async fn set(&self, request: Request<SetRequest>) -> Result<Response<SetReply>, Status> {
-        self.handle_request::<SetRequestHandler>(request).await
+    fn set<'a, 'b>(
+        &'a self,
+        request: Request<SetRequest>,
+    ) -> BoxedFuture<'b, Result<Response<SetReply>, Status>>
+    where
+        'a: 'b,
+        Self: 'b,
+    {
+        Box::pin(self.handle_request::<SetRequestHandler>(request))
     }
 
-    async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetReply>, Status> {
-        self.handle_request::<GetRequestHandler>(request).await
+    fn get<'a, 'b>(
+        &'a self,
+        request: Request<GetRequest>,
+    ) -> BoxedFuture<'a, Result<Response<GetReply>, Status>>
+    where
+        'a: 'b,
+        Self: 'b,
+    {
+        Box::pin(self.handle_request::<GetRequestHandler>(request))
     }
 }
