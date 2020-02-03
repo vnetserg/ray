@@ -77,7 +77,7 @@ impl RayStorageService {
         request: Request<T::Request>,
     ) -> Result<Response<T::Response>, Status> {
         let start = Instant::now();
-        counter!("rpc.request_count", 1, "method" => T::METHOD_NAME);
+        counter!("rayd.rpc.request_count", 1, "method" => T::METHOD_NAME);
 
         let inner = async {
             let remote_addr = request
@@ -101,10 +101,10 @@ impl RayStorageService {
 
         let response = inner.await;
         if response.is_err() {
-            counter!("rpc.error_count", 1, "method" => T::METHOD_NAME);
+            counter!("rayd.rpc.error_count", 1, "method" => T::METHOD_NAME);
         }
 
-        timing!("rpc.request_duration", start, Instant::now(), "method" => T::METHOD_NAME);
+        timing!("rayd.rpc.request_duration", start, Instant::now(), "method" => T::METHOD_NAME);
 
         response
     }

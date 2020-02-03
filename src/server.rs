@@ -179,16 +179,8 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
     let machine_config = &config.machine_service;
     let snapshot_config = &config.snapshot_service;
 
-    let (journal_sender, journal_receiver) = profiled_channel(
-        journal_config.request_queue_size,
-        "journal_service.request_queue",
-        vec![],
-    );
-    let (machine_sender, machine_receiver) = profiled_channel(
-        machine_config.request_queue_size,
-        "machine_service.request_queue",
-        vec![],
-    );
+    let (journal_sender, journal_receiver) = profiled_channel(journal_config.request_queue_size);
+    let (machine_sender, machine_receiver) = profiled_channel(machine_config.request_queue_size);
     let (snapshot_sender, snapshot_receiver) = mpsc::unbounded_channel();
     let (min_epoch_sender, min_epoch_receiver) = mpsc::unbounded_channel();
 

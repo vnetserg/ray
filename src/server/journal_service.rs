@@ -3,7 +3,10 @@ use super::{
     snapshot_service::MutationProposal,
 };
 
-use crate::{errors::*, util::{ProfiledSender, ProfiledReceiver}};
+use crate::{
+    errors::*,
+    util::{ProfiledReceiver, ProfiledSender},
+};
 
 use prost::Message;
 
@@ -12,6 +15,8 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use tokio::sync::{mpsc, oneshot};
 
 use futures::{select, FutureExt};
+
+use metrics::gauge;
 
 use std::fmt::{self, Debug};
 
@@ -79,6 +84,7 @@ impl<M: Machine> JournalServiceBase<M> {
     }
 
     async fn serve_batch(&mut self, persisted_epoch: u64) -> Result<BatchResult<M::Mutation>> {
+        gauge!("rayd.journal_service.queue_size", self.request_receiver.approx_len(), "queue" => "request");
         select! {
             maybe_min_epoch = self.min_epoch_receiver.recv().fuse() => {
                 let min_epoch = maybe_min_epoch.chain_err(|| "min_epoch_receiver failed")?;

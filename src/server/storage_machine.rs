@@ -60,7 +60,7 @@ impl Machine for StorageMachine {
         let mut offset = 0;
 
         while let Some(len) = try_read_u32(reader)? {
-            let mut buffer = vec![0; len];
+            let mut buffer = vec![0; len as usize];
             reader.read_exact(&mut buffer)?;
 
             let set = proto::SetRequest::decode(&buffer[..]).chain_err(|| {

@@ -1,10 +1,15 @@
 use super::journal_service::JournalServiceRequest;
 
-use crate::{errors::*, util::{ProfiledSender, ProfiledReceiver}};
+use crate::{
+    errors::*,
+    util::{ProfiledReceiver, ProfiledSender},
+};
 
 use prost::Message;
 
 use tokio::sync::oneshot;
+
+use metrics::gauge;
 
 use std::{
     cmp::{self, Ordering},
@@ -153,6 +158,10 @@ impl<M: Machine> MachineService<M> {
 
     pub async fn serve(&mut self) -> Result<()> {
         loop {
+            gauge!(
+                "rayd.machine_service.queue_size",
+                self.request_receiver.approx_len()
+            );
             match self
                 .request_receiver
                 .recv()

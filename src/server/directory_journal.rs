@@ -123,7 +123,7 @@ impl DirectoryJournalReader {
                         self.current_file_blob_count = 0;
                     }
                 }
-                Some(len) => return Ok(Some(len)),
+                Some(len) => return Ok(Some(len as usize)),
             }
         }
 
