@@ -5,20 +5,23 @@ use super::{
 
 use crate::{
     errors::*,
-    util::{ProfiledReceiver, ProfiledSender},
+    util::{ProfiledReceiver, ProfiledSender, ProfiledUnboundedReceiver, ProfiledUnboundedSender},
 };
 
 use prost::Message;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 use futures::{select, FutureExt};
 
-use metrics::gauge;
+use metrics::{gauge, timing, value};
 
-use std::fmt::{self, Debug};
+use std::{
+    fmt::{self, Debug},
+    time::Instant,
+};
 
 pub enum ReadResult<R, W> {
     Blob(Vec<u8>, R),
@@ -63,9 +66,9 @@ struct BatchResult<U> {
 
 struct JournalServiceBase<M: Machine> {
     machine_sender: ProfiledSender<MachineServiceRequest<M>>,
-    snapshot_sender: mpsc::UnboundedSender<MutationProposal<M::Mutation>>,
+    snapshot_sender: ProfiledUnboundedSender<MutationProposal<M::Mutation>>,
     request_receiver: ProfiledReceiver<JournalServiceRequest<M::Mutation>>,
-    min_epoch_receiver: mpsc::UnboundedReceiver<u64>,
+    min_epoch_receiver: ProfiledUnboundedReceiver<u64>,
     batch_size: usize,
 }
 
@@ -85,6 +88,8 @@ impl<M: Machine> JournalServiceBase<M> {
 
     async fn serve_batch(&mut self, persisted_epoch: u64) -> Result<BatchResult<M::Mutation>> {
         gauge!("rayd.journal_service.queue_size", self.request_receiver.approx_len(), "queue" => "request");
+        gauge!("rayd.journal_service.queue_size", self.min_epoch_receiver.approx_len(), "queue" => "min_epoch");
+
         select! {
             maybe_min_epoch = self.min_epoch_receiver.recv().fuse() => {
                 let min_epoch = maybe_min_epoch.chain_err(|| "min_epoch_receiver failed")?;
@@ -151,9 +156,9 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
     pub fn new(
         reader: R,
         machine_sender: ProfiledSender<MachineServiceRequest<M>>,
-        snapshot_sender: mpsc::UnboundedSender<MutationProposal<M::Mutation>>,
+        snapshot_sender: ProfiledUnboundedSender<MutationProposal<M::Mutation>>,
         request_receiver: ProfiledReceiver<JournalServiceRequest<M::Mutation>>,
-        min_epoch_receiver: mpsc::UnboundedReceiver<u64>,
+        min_epoch_receiver: ProfiledUnboundedReceiver<u64>,
         batch_size: usize,
         snapshot_epoch: u64,
     ) -> Self {
@@ -304,14 +309,27 @@ impl<W: JournalWriter, M: Machine> JournalService<W, M> {
                 .map(|(index, mutation)| (mutation, self.persisted_epoch + 1 + index as u64))
                 .collect();
 
+            value!("rayd.journal_service.batch_size", proposals.len() as u64);
+
             for (mutation, epoch) in proposals.iter() {
                 self.write_mutation(mutation, *epoch)?;
             }
 
+            let start = Instant::now();
             self.writer
                 .persist()
                 .chain_err(|| "failed to persist journal")?;
+            timing!(
+                "rayd.journal_service.persist_duration",
+                start,
+                Instant::now()
+            );
+
             self.persisted_epoch += proposals.len() as u64;
+            gauge!(
+                "rayd.journal_service.persisted_epoch",
+                self.persisted_epoch as i64
+            );
 
             debug!(
                 "Wrote {} mutations to journal (persisted epoch: {})",

@@ -17,9 +17,13 @@ use machine_service::{Machine, MachineService, MachineServiceHandle};
 use rpc::RayStorageService;
 use snapshot_service::{read_snapshot, SnapshotService, SnapshotStorage};
 
-use crate::{errors::*, proto::storage_server::StorageServer, util::profiled_channel};
+use crate::{
+    errors::*,
+    proto::storage_server::StorageServer,
+    util::{profiled_channel, profiled_unbounded_channel},
+};
 
-use tokio::{runtime, sync::mpsc};
+use tokio::runtime;
 use tonic::transport::Server;
 
 use log::LevelFilter;
@@ -181,8 +185,8 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
 
     let (journal_sender, journal_receiver) = profiled_channel(journal_config.request_queue_size);
     let (machine_sender, machine_receiver) = profiled_channel(machine_config.request_queue_size);
-    let (snapshot_sender, snapshot_receiver) = mpsc::unbounded_channel();
-    let (min_epoch_sender, min_epoch_receiver) = mpsc::unbounded_channel();
+    let (snapshot_sender, snapshot_receiver) = profiled_unbounded_channel();
+    let (min_epoch_sender, min_epoch_receiver) = profiled_unbounded_channel();
 
     let handle = MachineServiceHandle::new(journal_sender, machine_sender.clone());
     let snapshot = storage

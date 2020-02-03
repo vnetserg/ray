@@ -1,10 +1,13 @@
 use super::machine_service::Machine;
 
-use crate::errors::*;
+use crate::{
+    errors::*,
+    util::{ProfiledUnboundedReceiver, ProfiledUnboundedSender},
+};
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use tokio::sync::mpsc;
+use metrics::{gauge, value};
 
 use std::io::{Read, Write};
 
@@ -40,8 +43,8 @@ fn write_snapshot<W: Write, M: Machine>(writer: &mut W, machine: &M, epoch: u64)
 pub struct SnapshotService<S: SnapshotStorage, M: Machine> {
     storage: S,
     machine: M,
-    proposal_receiver: mpsc::UnboundedReceiver<MutationProposal<M::Mutation>>,
-    min_epoch_sender: mpsc::UnboundedSender<u64>,
+    proposal_receiver: ProfiledUnboundedReceiver<MutationProposal<M::Mutation>>,
+    min_epoch_sender: ProfiledUnboundedSender<u64>,
     epoch: u64,
     snapshot_interval: u64,
     batch_size: usize,
@@ -52,8 +55,8 @@ impl<S: SnapshotStorage, M: Machine> SnapshotService<S, M> {
     pub fn new(
         storage: S,
         machine: M,
-        proposal_receiver: mpsc::UnboundedReceiver<MutationProposal<M::Mutation>>,
-        min_epoch_sender: mpsc::UnboundedSender<u64>,
+        proposal_receiver: ProfiledUnboundedReceiver<MutationProposal<M::Mutation>>,
+        min_epoch_sender: ProfiledUnboundedSender<u64>,
         epoch: u64,
         snapshot_interval: u64,
         batch_size: usize,
@@ -72,6 +75,12 @@ impl<S: SnapshotStorage, M: Machine> SnapshotService<S, M> {
 
     pub async fn serve(&mut self) -> Result<()> {
         loop {
+            gauge!("rayd.snapshot_service.epoch", self.epoch as i64);
+            gauge!(
+                "rayd.snapshot_service.queue_size",
+                self.proposal_receiver.approx_len()
+            );
+
             self.apply_mutation_batch()
                 .await
                 .chain_err(|| "failed to apply mutation batch")?;
@@ -93,7 +102,10 @@ impl<S: SnapshotStorage, M: Machine> SnapshotService<S, M> {
             } else {
                 match self.proposal_receiver.try_recv() {
                     Ok(proposal) => proposal,
-                    Err(_) => break,
+                    Err(_) => {
+                        value!("rayd.snapshot_service.batch_size", i as u64);
+                        break;
+                    }
                 }
             };
 

@@ -9,7 +9,7 @@ use prost::Message;
 
 use tokio::sync::oneshot;
 
-use metrics::gauge;
+use metrics::{counter, gauge};
 
 use std::{
     cmp::{self, Ordering},
@@ -169,13 +169,16 @@ impl<M: Machine> MachineService<M> {
                 .chain_err(|| "request_receiver failed")?
             {
                 MachineServiceRequest::Proposal { mutation, epoch } => {
+                    counter!("rayd.machine_service.proposal_count", 1);
                     self.handle_proposal(mutation, epoch).await;
+                    gauge!("rayd.machine_service.epoch", self.epoch as i64);
                 }
                 MachineServiceRequest::Query {
                     query,
                     min_epoch,
                     result,
                 } => {
+                    counter!("rayd.machine_service.query_count", 1);
                     self.handle_query(query, min_epoch, result);
                 }
             }
