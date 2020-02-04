@@ -120,11 +120,37 @@ fn init_metrics(config: &MetricsConfig) -> Result<()> {
 
     let main_pid = std::process::id();
     receiver.sink().proxy("rayd", move || {
-        let pids = get_children_pids(main_pid).unwrap_or_else(Vec::new);
+        let pids = match get_children_pids(main_pid) {
+            Ok(pids) => pids,
+            Err(err) => {
+                warn!("Failed to get child pids:\n{}", err.display_fancy_chain());
+                return Vec::new();
+            }
+        };
         pids.into_iter()
             .filter_map(|pid| {
-                let name = get_process_name(pid)?;
-                let cpu_time = get_process_cpu_time(pid)?;
+                let name = match get_process_name(pid) {
+                    Ok(name) => name,
+                    Err(err) => {
+                        warn!(
+                            "Failed to get process name (pid {}):\n{}",
+                            pid,
+                            err.display_fancy_chain()
+                        );
+                        return None;
+                    }
+                };
+                let cpu_time = match get_process_cpu_time(pid) {
+                    Ok(cpu_time) => cpu_time,
+                    Err(err) => {
+                        warn!(
+                            "Failed to get process cpu time (pid {}):\n{}",
+                            pid,
+                            err.display_fancy_chain()
+                        );
+                        return None;
+                    }
+                };
                 let labels = labels!("pid" => pid.to_string(), "name" => name);
                 let key = Key::from_name_and_labels("cpu_time", labels);
                 let value = Measurement::Gauge(cpu_time as i64);
