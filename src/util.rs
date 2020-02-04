@@ -8,6 +8,7 @@ use tokio::sync::mpsc::{
 
 use std::{
     io::{self, Read},
+    process::Command,
     sync::{
         atomic::{AtomicI64, Ordering},
         Arc,
@@ -26,6 +27,55 @@ pub fn try_read_u32<T: Read>(reader: &mut T) -> io::Result<Option<u32>> {
     reader.read_exact(&mut buffer[1..])?;
     let value = (&buffer[..]).read_u32::<LittleEndian>().unwrap();
     Ok(Some(value))
+}
+
+pub fn get_children_pids(parent_pid: u32) -> Option<Vec<u32>> {
+    let output = Command::new("ls")
+        .arg(format!("/proc/{}/task", parent_pid))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = std::str::from_utf8(&output.stdout).ok()?;
+    let pids = text
+        .lines()
+        .filter_map(|line| Some(line.parse().ok()?))
+        .collect();
+    Some(pids)
+}
+
+pub fn get_process_name(pid: u32) -> Option<String> {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cat /proc/{}/status | head -n1 | awk '{{print $2}}'",
+            pid
+        ))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = std::str::from_utf8(&output.stdout).ok()?;
+    Some(text.trim().to_string())
+}
+
+pub fn get_process_cpu_time(pid: u32) -> Option<u64> {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cat /proc/{}/sched | grep se.sum_exec_runtime | awk '{{print $3}}'",
+            pid
+        ))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = std::str::from_utf8(&output.stdout).ok()?;
+    let value: f64 = text.trim().parse().ok()?;
+    Some((value * 1000.) as u64)
 }
 
 pub fn profiled_channel<T>(max_size: usize) -> (ProfiledSender<T>, ProfiledReceiver<T>) {

@@ -20,7 +20,10 @@ use snapshot_service::{read_snapshot, SnapshotService, SnapshotStorage};
 use crate::{
     errors::*,
     proto::storage_server::StorageServer,
-    util::{profiled_channel, profiled_unbounded_channel},
+    util::{
+        get_children_pids, get_process_cpu_time, get_process_name, profiled_channel,
+        profiled_unbounded_channel,
+    },
 };
 
 use tokio::runtime;
@@ -31,7 +34,10 @@ use simplelog::{
     CombinedLogger, LevelPadding, SharedLogger, TermLogger, TerminalMode, WriteLogger,
 };
 
-use metrics_runtime::{exporters::HttpExporter, observers::PrometheusBuilder, Receiver};
+use metrics::{labels, Key};
+use metrics_runtime::{
+    exporters::HttpExporter, observers::PrometheusBuilder, Measurement, Receiver,
+};
 
 use std::{
     fs,
@@ -112,10 +118,26 @@ fn init_metrics(config: &MetricsConfig) -> Result<()> {
         .build()
         .chain_err(|| "failed to create metrics receiver")?;
 
+    let main_pid = std::process::id();
+    receiver.sink().proxy("rayd", move || {
+        let pids = get_children_pids(main_pid).unwrap_or_else(Vec::new);
+        pids.into_iter()
+            .filter_map(|pid| {
+                let name = get_process_name(pid)?;
+                let cpu_time = get_process_cpu_time(pid)?;
+                let labels = labels!("pid" => pid.to_string(), "name" => name);
+                let key = Key::from_name_and_labels("cpu_time", labels);
+                let value = Measurement::Gauge(cpu_time as i64);
+                Some((key, value))
+            })
+            .collect()
+    });
+
     let address = config
         .address
         .parse()
         .chain_err(|| format!("not a valid IP address: {}", config.address))?;
+
     let server = HttpExporter::new(
         receiver.controller(),
         PrometheusBuilder::new(),
