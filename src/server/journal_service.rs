@@ -20,6 +20,10 @@ use metrics::{gauge, timing, value};
 
 use std::{
     fmt::{self, Debug},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::Instant,
 };
 
@@ -41,14 +45,9 @@ pub trait JournalWriter: Send + 'static {
     fn dispose_oldest_blobs(&mut self, blob_count: usize) -> Result<()>;
 }
 
-pub enum JournalServiceRequest<U: Message> {
-    PersistMutation {
-        mutation: U,
-        notify: oneshot::Sender<()>,
-    },
-    GetPersistedEpoch {
-        epoch_sender: oneshot::Sender<u64>,
-    },
+pub struct JournalServiceRequest<U: Message> {
+    pub mutation: U,
+    pub notify: oneshot::Sender<()>,
 }
 
 // Only need Debug to make tokio::sync::mpsc::errors::SendError<_> implement Error.
@@ -70,6 +69,7 @@ struct JournalServiceBase<M: Machine> {
     request_receiver: ProfiledReceiver<JournalServiceRequest<M::Mutation>>,
     min_epoch_receiver: ProfiledUnboundedReceiver<u64>,
     batch_size: usize,
+    external_epoch: Arc<AtomicU64>,
 }
 
 impl<M: Machine> JournalServiceBase<M> {
@@ -86,9 +86,17 @@ impl<M: Machine> JournalServiceBase<M> {
             .chain_err(|| "machine_sender failed")
     }
 
-    async fn serve_batch(&mut self, persisted_epoch: u64) -> Result<BatchResult<M::Mutation>> {
-        gauge!("rayd.journal_service.queue_size", self.request_receiver.approx_len(), "queue" => "request");
-        gauge!("rayd.journal_service.queue_size", self.min_epoch_receiver.approx_len(), "queue" => "min_epoch");
+    async fn serve_batch(&mut self) -> Result<BatchResult<M::Mutation>> {
+        gauge!(
+            "rayd.journal_service.queue_size",
+            self.request_receiver.approx_len(),
+            "queue" => "request"
+        );
+        gauge!(
+            "rayd.journal_service.queue_size",
+            self.min_epoch_receiver.approx_len(),
+            "queue" => "min_epoch"
+        );
 
         select! {
             maybe_min_epoch = self.min_epoch_receiver.recv().fuse() => {
@@ -101,7 +109,7 @@ impl<M: Machine> JournalServiceBase<M> {
             },
             maybe_request = self.request_receiver.recv().fuse() => {
                 let request = maybe_request.chain_err(|| "request_receiver failed")?;
-                self.process_request_batch(request, persisted_epoch)
+                self.process_request_batch(request)
             },
         }
     }
@@ -109,7 +117,6 @@ impl<M: Machine> JournalServiceBase<M> {
     fn process_request_batch(
         &mut self,
         first: JournalServiceRequest<M::Mutation>,
-        persisted_epoch: u64,
     ) -> Result<BatchResult<M::Mutation>> {
         let mut mutations = vec![];
         let mut notifiers = vec![];
@@ -117,15 +124,8 @@ impl<M: Machine> JournalServiceBase<M> {
         let mut processed_requests = 0;
 
         loop {
-            match request {
-                JournalServiceRequest::GetPersistedEpoch { epoch_sender } => {
-                    epoch_sender.send(persisted_epoch).ok(); // Ignore error
-                }
-                JournalServiceRequest::PersistMutation { mutation, notify } => {
-                    mutations.push(mutation);
-                    notifiers.push(notify);
-                }
-            }
+            mutations.push(request.mutation);
+            notifiers.push(request.notify);
             processed_requests += 1;
 
             if processed_requests < self.batch_size {
@@ -144,6 +144,11 @@ impl<M: Machine> JournalServiceBase<M> {
             min_epoch: None,
         })
     }
+
+    fn update_persisted_epoch(&self, persisted_epoch: u64) {
+        self.external_epoch
+            .store(persisted_epoch, Ordering::Release);
+    }
 }
 
 pub struct JournalServiceRestorer<R: JournalReader, M: Machine> {
@@ -153,6 +158,7 @@ pub struct JournalServiceRestorer<R: JournalReader, M: Machine> {
 }
 
 impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         reader: R,
         machine_sender: ProfiledSender<MachineServiceRequest<M>>,
@@ -161,6 +167,7 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
         min_epoch_receiver: ProfiledUnboundedReceiver<u64>,
         batch_size: usize,
         snapshot_epoch: u64,
+        external_epoch: Arc<AtomicU64>,
     ) -> Self {
         let base = JournalServiceBase {
             machine_sender,
@@ -168,6 +175,7 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
             request_receiver,
             min_epoch_receiver,
             batch_size,
+            external_epoch,
         };
         Self {
             reader,
@@ -177,6 +185,8 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
     }
 
     pub async fn restore(mut self) -> Result<JournalService<R::Writer, M>> {
+        info!("Starting journal recovery");
+
         let mut mutation_count = 0usize;
         let mut last_epoch = None;
 
@@ -221,6 +231,11 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
                 mutation_count, first_epoch, last_epoch
             );
         }
+
+        // Notice: before this point, the value of the external_epoch atomic was zero.
+        // It is crucially important that no requests are served based on it's value before
+        // the atomic is properly initialized. Otherwise expect stale reads.
+        self.base.update_persisted_epoch(last_epoch);
 
         Ok(JournalService {
             writer: maybe_writer.unwrap(),
@@ -293,7 +308,7 @@ impl<W: JournalWriter, M: Machine> JournalService<W, M> {
                 mutations,
                 notifiers,
                 min_epoch,
-            } = self.base.serve_batch(self.persisted_epoch).await?;
+            } = self.base.serve_batch().await?;
 
             if let Some(min_epoch) = min_epoch {
                 self.handle_new_min_epoch(min_epoch)?;
@@ -326,6 +341,7 @@ impl<W: JournalWriter, M: Machine> JournalService<W, M> {
             );
 
             self.persisted_epoch += proposals.len() as u64;
+            self.base.update_persisted_epoch(self.persisted_epoch);
             gauge!(
                 "rayd.journal_service.persisted_epoch",
                 self.persisted_epoch as i64

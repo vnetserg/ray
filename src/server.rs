@@ -26,7 +26,7 @@ use crate::{
     },
 };
 
-use tokio::runtime;
+use tokio::{runtime, sync::oneshot};
 use tonic::transport::Server;
 
 use log::LevelFilter;
@@ -45,6 +45,7 @@ use std::{
     net::SocketAddr,
     panic::{catch_unwind, AssertUnwindSafe},
     process::exit,
+    sync::{atomic::AtomicU64, Arc},
     thread,
 };
 
@@ -196,8 +197,8 @@ fn start_server(config: Config) -> Result<()> {
     let snapshot_storage = DirectorySnapshotStorage::new(&config.snapshot_storage.path)
         .chain_err(|| "failed to initialize snapshot storage")?;
 
-    let handle = run_psm(journal_reader, snapshot_storage, &config.psm)
-        .chain_err(|| "failed to initialize PSM services")?;
+    let (handle, ready) = run_psm(journal_reader, snapshot_storage, &config.psm)
+        .chain_err(|| "failed to run PSM services")?;
 
     let storage_service = RayStorageService::new(handle);
     let server = Server::builder()
@@ -217,6 +218,11 @@ fn start_server(config: Config) -> Result<()> {
         .build()
         .chain_err(|| "failed to start Tokio runtime")?;
 
+    // Wait for PSM services to become initialized.
+    runtime
+        .block_on(ready)
+        .chain_err(|| "wait on PSM initialization failed")?;
+
     info!("Serving rayd on {}", socket_address);
 
     runtime.block_on(server).chain_err(|| "RPC service failed")
@@ -226,7 +232,7 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
     journal_reader: R,
     storage: S,
     config: &PsmConfig,
-) -> Result<MachineServiceHandle<M>> {
+) -> Result<(MachineServiceHandle<M>, oneshot::Receiver<()>)> {
     let journal_config = &config.journal_service;
     let machine_config = &config.machine_service;
     let snapshot_config = &config.snapshot_service;
@@ -235,8 +241,13 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
     let (machine_sender, machine_receiver) = profiled_channel(machine_config.request_queue_size);
     let (snapshot_sender, snapshot_receiver) = profiled_unbounded_channel();
     let (min_epoch_sender, min_epoch_receiver) = profiled_unbounded_channel();
+    let persisted_epoch = Arc::new(AtomicU64::new(0));
 
-    let handle = MachineServiceHandle::new(journal_sender, machine_sender.clone());
+    let handle = MachineServiceHandle::new(
+        journal_sender,
+        machine_sender.clone(),
+        persisted_epoch.clone(),
+    );
     let snapshot = storage
         .open_last_snapshot()
         .chain_err(|| "failed to open the last snapshot")?;
@@ -254,6 +265,7 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
         }
     };
 
+    let (ready_sender, ready_receiver) = oneshot::channel();
     let journal_batch_size = journal_config.batch_size;
     run_in_dedicated_thread("rayd-journal", RuntimeKind::Basic, async move {
         let restorer = JournalServiceRestorer::<R, M>::new(
@@ -264,8 +276,10 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
             min_epoch_receiver,
             journal_batch_size,
             epoch,
+            persisted_epoch,
         );
         let mut journal_service = restorer.restore().await?;
+        ready_sender.send(()).ok();
         journal_service.serve().await
     })?;
 
@@ -290,7 +304,7 @@ fn run_psm<M: Machine, R: JournalReader, S: SnapshotStorage>(
         machine_service.serve().await
     })?;
 
-    Ok(handle)
+    Ok((handle, ready_receiver))
 }
 
 enum RuntimeKind {

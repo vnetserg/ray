@@ -12,10 +12,14 @@ use tokio::sync::oneshot;
 use metrics::{counter, gauge};
 
 use std::{
-    cmp::{self, Ordering},
+    cmp,
     collections::BinaryHeap,
     fmt::{self, Debug, Display},
     io::{Read, Write},
+    sync::{
+        atomic::{self, AtomicU64},
+        Arc,
+    },
 };
 
 pub trait Machine: Default + Clone + Send + 'static {
@@ -52,22 +56,25 @@ impl<M: Machine> Debug for MachineServiceRequest<M> {
 pub struct MachineServiceHandle<M: Machine> {
     journal_sender: ProfiledSender<JournalServiceRequest<M::Mutation>>,
     machine_sender: ProfiledSender<MachineServiceRequest<M>>,
+    persisted_epoch: Arc<AtomicU64>,
 }
 
 impl<M: Machine> MachineServiceHandle<M> {
     pub fn new(
         journal_sender: ProfiledSender<JournalServiceRequest<M::Mutation>>,
         machine_sender: ProfiledSender<MachineServiceRequest<M>>,
+        persisted_epoch: Arc<AtomicU64>,
     ) -> Self {
         Self {
             journal_sender,
             machine_sender,
+            persisted_epoch,
         }
     }
 
     pub async fn apply_mutation(&mut self, mutation: M::Mutation) -> Result<()> {
         let (sender, receiver) = oneshot::channel();
-        let request = JournalServiceRequest::PersistMutation {
+        let request = JournalServiceRequest {
             mutation,
             notify: sender,
         };
@@ -79,21 +86,7 @@ impl<M: Machine> MachineServiceHandle<M> {
     }
 
     pub async fn query_state(&mut self, query: M::Query) -> Result<M::Status> {
-        let epoch = self.get_persisted_epoch().await?;
-        self.query_state_after(query, epoch).await
-    }
-
-    async fn get_persisted_epoch(&mut self) -> Result<u64> {
-        let (epoch_sender, epoch_receiver) = oneshot::channel();
-        let request = JournalServiceRequest::GetPersistedEpoch { epoch_sender };
-        self.journal_sender
-            .send(request)
-            .await
-            .chain_err(|| "journal_sender failed")?;
-        epoch_receiver.await.chain_err(|| "sender dropped")
-    }
-
-    async fn query_state_after(&mut self, query: M::Query, epoch: u64) -> Result<M::Status> {
+        let epoch = self.persisted_epoch.load(atomic::Ordering::Acquire);
         let (sender, receiver) = oneshot::channel();
         let request = MachineServiceRequest::Query {
             query,
@@ -123,14 +116,14 @@ impl<M: Machine> cmp::PartialEq for QueryPqItem<M> {
 impl<M: Machine> cmp::Eq for QueryPqItem<M> {}
 
 impl<M: Machine> cmp::PartialOrd for QueryPqItem<M> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         // NB: reverse is needed for min-heap
         Some(self.min_epoch.cmp(&other.min_epoch).reverse())
     }
 }
 
 impl<M: Machine> cmp::Ord for QueryPqItem<M> {
-    fn cmp(&self, other: &Self) -> Ordering {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
         self.partial_cmp(other).unwrap()
     }
 }
