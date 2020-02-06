@@ -93,7 +93,10 @@ pub struct LoggingServiceFacade {
 impl Log for LoggingServiceFacade {
     fn enabled(&self, metadata: &Metadata) -> bool {
         metadata.level() <= self.max_level
-            && self.modules.iter().any(|module| metadata.target().starts_with(module))
+            && self
+                .modules
+                .iter()
+                .any(|module| metadata.target().starts_with(module))
     }
 
     fn log(&self, record: &Record) {
@@ -126,7 +129,11 @@ impl LoggingServiceFacade {
             .max()
             .unwrap_or(LevelFilter::Off);
         let modules = config.modules.clone();
-        let facade = Box::new(LoggingServiceFacade { sender, max_level, modules });
+        let facade = Box::new(LoggingServiceFacade {
+            sender,
+            max_level,
+            modules,
+        });
         log::set_boxed_logger(facade)
             .map(|_| log::set_max_level(max_level))
             .chain_err(|| "failed to set logger")

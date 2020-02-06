@@ -1,7 +1,7 @@
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub rpc: RpcConfig,
@@ -10,19 +10,6 @@ pub struct Config {
     pub snapshot_storage: SnapshotStorageConfig,
     pub logging: LoggingConfig,
     pub metrics: MetricsConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            rpc: RpcConfig::default(),
-            psm: PsmConfig::default(),
-            journal_storage: JournalStorageConfig::default(),
-            snapshot_storage: SnapshotStorageConfig::default(),
-            logging: LoggingConfig::default(),
-            metrics: MetricsConfig::default(),
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -37,7 +24,7 @@ impl Default for RpcConfig {
     fn default() -> Self {
         Self {
             threads: 0,
-            address: String::from("127.0.0.1"),
+            address: "127.0.0.1".into(),
             port: 39172,
         }
     }
@@ -140,17 +127,12 @@ pub struct LoggingConfig {
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
-            buffer_size: 1000000,
-            modules: vec![
-                "ray".to_string(),
-                "panic".to_string(),
-            ],
-            targets: vec![
-                LoggingTargetConfig {
-                    target: LoggingTarget::Stderr,
-                    level: LogLevel::Info,
-                },
-            ],
+            buffer_size: 1_000_000,
+            modules: vec!["ray".to_string(), "panic".to_string()],
+            targets: vec![LoggingTargetConfig {
+                target: LoggingTarget::Stderr,
+                level: LogLevel::Info,
+            }],
         }
     }
 }
