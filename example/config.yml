@@ -6,10 +6,9 @@ rpc:
 psm:
     machine_service:
         request_queue_size: 10000
-        mutation_queue_size: 10000
     journal_service:
         request_queue_size: 10000
-        batch_size: 100000
+        batch_size: 10000
     snapshot_service:
         snapshot_interval: 1000000
         batch_size: 100000000
@@ -22,14 +21,19 @@ snapshot_storage:
     path: ./snapshots
 
 logging:
-    - target:
-        type: file
-        path: ./rayd.debug.log
-      level: debug
+    buffer_size: 1000000
+    modules:
+        - ray
+        - panic
+    targets:
+      - target:
+          type: file
+          path: ./rayd.debug.log
+        level: debug
 
-    - target:
-        type: stderr
-      level: info
+      - target:
+          type: stderr
+        level: info
 
 metrics:
     enable: true

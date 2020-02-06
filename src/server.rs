@@ -73,16 +73,16 @@ pub fn serve_forever(config: Config) -> ! {
     exit(0);
 }
 
-fn init_logging(configs: &[LoggingConfig]) -> Result<()> {
+fn init_logging(config: &LoggingConfig) -> Result<()> {
     let (log_sender, log_receiver) = profiled_unbounded_channel();
 
-    let mut logging_service = LoggingService::new(log_receiver, configs)
+    let mut logging_service = LoggingService::new(log_receiver, config)
         .chain_err(|| "failed to create logging service")?;
     run_in_dedicated_thread("rayd-logging", RuntimeKind::Basic, async move {
         logging_service.serve().await
     })?;
 
-    LoggingServiceFacade::init(log_sender, configs)?;
+    LoggingServiceFacade::init(log_sender, config)?;
     log_panics::init();
 
     Ok(())

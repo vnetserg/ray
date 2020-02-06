@@ -8,7 +8,7 @@ pub struct Config {
     pub psm: PsmConfig,
     pub journal_storage: JournalStorageConfig,
     pub snapshot_storage: SnapshotStorageConfig,
-    pub logging: Vec<LoggingConfig>,
+    pub logging: LoggingConfig,
     pub metrics: MetricsConfig,
 }
 
@@ -19,10 +19,7 @@ impl Default for Config {
             psm: PsmConfig::default(),
             journal_storage: JournalStorageConfig::default(),
             snapshot_storage: SnapshotStorageConfig::default(),
-            logging: vec![LoggingConfig {
-                target: LoggingTarget::Stderr,
-                level: LogLevel::Info,
-            }],
+            logging: LoggingConfig::default(),
             metrics: MetricsConfig::default(),
         }
     }
@@ -135,6 +132,32 @@ impl Default for SnapshotStorageConfig {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoggingConfig {
+    pub buffer_size: usize,
+    pub modules: Vec<String>,
+    pub targets: Vec<LoggingTargetConfig>,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            buffer_size: 1000000,
+            modules: vec![
+                "ray".to_string(),
+                "panic".to_string(),
+            ],
+            targets: vec![
+                LoggingTargetConfig {
+                    target: LoggingTarget::Stderr,
+                    level: LogLevel::Info,
+                },
+            ],
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoggingTargetConfig {
     pub target: LoggingTarget,
     pub level: LogLevel,
 }

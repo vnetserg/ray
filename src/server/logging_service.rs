@@ -28,11 +28,11 @@ pub struct LoggingService {
 impl LoggingService {
     pub fn new(
         receiver: ProfiledUnboundedReceiver<(String, Level)>,
-        configs: &[LoggingConfig],
+        config: &LoggingConfig,
     ) -> Result<Self> {
         let mut writers = vec![];
-        for config in configs {
-            let file = match &config.target {
+        for target_config in &config.targets {
+            let file = match &target_config.target {
                 LoggingTarget::Stderr => {
                     let stderr_fd =
                         dup(STDERR_FILENO).chain_err(|| "failed to dup stderr file descriptor")?;
@@ -43,8 +43,8 @@ impl LoggingService {
                     maybe_file.chain_err(|| format!("failed to open {}", path))?
                 }
             };
-            let writer = BufWriter::new(file);
-            writers.push((writer, config.level.into()));
+            let writer = BufWriter::with_capacity(config.buffer_size, file);
+            writers.push((writer, target_config.level.into()));
         }
 
         Ok(Self { receiver, writers })
@@ -86,13 +86,14 @@ impl LoggingService {
 
 pub struct LoggingServiceFacade {
     sender: ProfiledUnboundedSender<(String, Level)>,
+    modules: Vec<String>,
     max_level: LevelFilter,
 }
 
 impl Log for LoggingServiceFacade {
     fn enabled(&self, metadata: &Metadata) -> bool {
         metadata.level() <= self.max_level
-            && (metadata.target().starts_with("ray") || metadata.target().starts_with("panic"))
+            && self.modules.iter().any(|module| metadata.target().starts_with(module))
     }
 
     fn log(&self, record: &Record) {
@@ -116,14 +117,16 @@ impl Log for LoggingServiceFacade {
 impl LoggingServiceFacade {
     pub fn init(
         sender: ProfiledUnboundedSender<(String, Level)>,
-        configs: &[LoggingConfig],
+        config: &LoggingConfig,
     ) -> Result<()> {
-        let max_level = configs
+        let max_level = config
+            .targets
             .iter()
-            .map(|config| LevelFilter::from(config.level))
+            .map(|target| LevelFilter::from(target.level))
             .max()
             .unwrap_or(LevelFilter::Off);
-        let facade = Box::new(LoggingServiceFacade { sender, max_level });
+        let modules = config.modules.clone();
+        let facade = Box::new(LoggingServiceFacade { sender, max_level, modules });
         log::set_boxed_logger(facade)
             .map(|_| log::set_max_level(max_level))
             .chain_err(|| "failed to set logger")
