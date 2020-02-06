@@ -190,7 +190,7 @@ impl<T> Clone for ProfiledUnboundedSender<T> {
 }
 
 impl<T> ProfiledUnboundedSender<T> {
-    pub fn send(&mut self, value: T) -> std::result::Result<(), SendError<T>> {
+    pub fn send(&self, value: T) -> std::result::Result<(), SendError<T>> {
         let result = self.inner.send(value);
         if result.is_ok() {
             self.size.fetch_add(1, Ordering::Release);

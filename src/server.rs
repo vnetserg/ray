@@ -2,6 +2,7 @@ mod config;
 mod directory_journal;
 mod directory_snapshot_storage;
 mod journal_service;
+mod logging_service;
 mod machine_service;
 mod rpc;
 mod snapshot_service;
@@ -9,10 +10,11 @@ mod storage_machine;
 
 pub use config::Config;
 
-use config::{LoggingConfig, LoggingTarget, MetricsConfig, PsmConfig};
+use config::{LoggingConfig, MetricsConfig, PsmConfig};
 use directory_journal::DirectoryJournalReader;
 use directory_snapshot_storage::DirectorySnapshotStorage;
 use journal_service::{JournalReader, JournalServiceRestorer};
+use logging_service::{LoggingService, LoggingServiceFacade};
 use machine_service::{Machine, MachineService, MachineServiceHandle};
 use rpc::RayStorageService;
 use snapshot_service::{read_snapshot, SnapshotService, SnapshotStorage};
@@ -29,18 +31,12 @@ use crate::{
 use tokio::{runtime, sync::oneshot};
 use tonic::transport::Server;
 
-use log::LevelFilter;
-use simplelog::{
-    CombinedLogger, LevelPadding, SharedLogger, TermLogger, TerminalMode, WriteLogger,
-};
-
 use metrics::{labels, Key};
 use metrics_runtime::{
     exporters::HttpExporter, observers::PrometheusBuilder, Measurement, Receiver,
 };
 
 use std::{
-    fs,
     future::Future,
     net::SocketAddr,
     panic::{catch_unwind, AssertUnwindSafe},
@@ -59,7 +55,7 @@ pub fn serve_forever(config: Config) -> ! {
     });
 
     init_metrics(&config.metrics).unwrap_or_else(|err| {
-        eprintln!(
+        error!(
             "Failed to initialize metrics (error chain below)\n{}",
             err.display_fancy_chain()
         );
@@ -78,33 +74,15 @@ pub fn serve_forever(config: Config) -> ! {
 }
 
 fn init_logging(configs: &[LoggingConfig]) -> Result<()> {
-    let sl_config = simplelog::ConfigBuilder::new()
-        .add_filter_allow_str("ray")
-        .add_filter_allow_str("log_panics")
-        .set_time_format_str("%F %T%.3f")
-        .set_target_level(LevelFilter::Error)
-        .set_thread_level(LevelFilter::Off)
-        .set_level_padding(LevelPadding::Off)
-        .build();
+    let (log_sender, log_receiver) = profiled_unbounded_channel();
 
-    let mut loggers = vec![];
-    for config in configs {
-        let logger: Box<dyn SharedLogger> = match &config.target {
-            LoggingTarget::Stderr => {
-                TermLogger::new(config.level.into(), sl_config.clone(), TerminalMode::Mixed)
-                    .chain_err(|| "failed to initialize terminal logger")?
-            }
-            LoggingTarget::File { path } => {
-                let maybe_file = fs::OpenOptions::new().append(true).create(true).open(path);
-                let file = maybe_file.chain_err(|| format!("failed to open {}", path))?;
-                WriteLogger::new(config.level.into(), sl_config.clone(), file)
-            }
-        };
-        loggers.push(logger);
-    }
+    let mut logging_service = LoggingService::new(log_receiver, configs)
+        .chain_err(|| "failed to create logging service")?;
+    run_in_dedicated_thread("rayd-logging", RuntimeKind::Basic, async move {
+        logging_service.serve().await
+    })?;
 
-    CombinedLogger::init(loggers).chain_err(|| "failed to initialize combined lobber")?;
-
+    LoggingServiceFacade::init(log_sender, configs)?;
     log_panics::init();
 
     Ok(())
