@@ -117,7 +117,7 @@ impl Default for SnapshotStorageConfig {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct LoggingConfig {
     pub buffer_size: usize,
     pub modules: Vec<String>,

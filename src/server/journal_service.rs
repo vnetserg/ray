@@ -5,7 +5,7 @@ use super::{
 
 use crate::{
     errors::*,
-    util::{ProfiledReceiver, ProfiledSender, ProfiledUnboundedReceiver, ProfiledUnboundedSender},
+    util::{Traced, ProfiledReceiver, ProfiledSender, ProfiledUnboundedReceiver, ProfiledUnboundedSender},
 };
 
 use prost::Message;
@@ -46,7 +46,7 @@ pub trait JournalWriter: Send + 'static {
 }
 
 pub struct JournalServiceRequest<U: Message> {
-    pub mutation: U,
+    pub mutation: Traced<U>,
     pub notify: oneshot::Sender<()>,
 }
 
@@ -58,7 +58,7 @@ impl<U: Message> Debug for JournalServiceRequest<U> {
 }
 
 struct BatchResult<U> {
-    mutations: Vec<U>,
+    mutations: Vec<Traced<U>>,
     notifiers: Vec<oneshot::Sender<()>>,
     min_epoch: Option<u64>,
 }
@@ -73,10 +73,10 @@ struct JournalServiceBase<M: Machine> {
 }
 
 impl<M: Machine> JournalServiceBase<M> {
-    async fn send_proposal(&mut self, mutation: M::Mutation, epoch: u64) -> Result<()> {
+    async fn send_proposal(&mut self, mutation: Traced<M::Mutation>, epoch: u64) -> Result<()> {
         self.snapshot_sender
             .send(MutationProposal {
-                mutation: mutation.clone(),
+                mutation: mutation.payload.clone(),
                 epoch,
             })
             .chain_err(|| "snapshot_sender failed")?;
@@ -200,7 +200,8 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
                     Self::validate_blob_epoch(epoch, self.snapshot_epoch, last_epoch)?;
 
                     if epoch > self.snapshot_epoch {
-                        self.base.send_proposal(mutation, epoch).await?;
+                        let traced = Traced::new(mutation);
+                        self.base.send_proposal(traced, epoch).await?;
                     }
 
                     last_epoch = Some(epoch);
@@ -327,7 +328,7 @@ impl<W: JournalWriter, M: Machine> JournalService<W, M> {
             value!("rayd.journal_service.batch_size", proposals.len() as u64);
 
             for (mutation, epoch) in proposals.iter() {
-                self.write_mutation(mutation, *epoch)?;
+                self.write_mutation(&mutation.payload, *epoch)?;
             }
 
             let start = Instant::now();

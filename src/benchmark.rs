@@ -58,14 +58,14 @@ impl Benchmark for SimpleReadBenchmark {
         sender: mpsc::UnboundedSender<Self::Message>,
     ) {
         client
-            .set(key, value)
+            .set(key.clone(), value)
             .await
             .unwrap_or_else(|err| panic!("Set failed: {}", err));
 
         loop {
             let now = Instant::now();
-            if let Err(err) = client.get("hello".into()).await {
-                error!("Failed to get key 'hello': {}", err);
+            if let Err(err) = client.get(key.clone()).await {
+                error!("Failed to get key '{:?}': {}", key, err);
                 continue;
             }
             let elapsed = now.elapsed();

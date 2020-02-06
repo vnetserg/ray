@@ -1,10 +1,13 @@
 use super::{machine_service::MachineServiceHandle, storage_machine::StorageMachine};
+use crate::util::Traced;
 
 use metrics::{counter, timing};
 
 use crate::proto::{storage_server::Storage, GetReply, GetRequest, SetReply, SetRequest};
 
 use tonic::{Code, Request, Response, Status};
+
+use uuid::Uuid;
 
 use std::{
     fmt::{Debug, Display},
@@ -24,7 +27,7 @@ trait RequestHandler {
     const METHOD_NAME: &'static str;
 
     async fn handle_request(
-        request: Self::Request,
+        request: Traced<Self::Request>,
         handle: MachineServiceHandle<StorageMachine>,
     ) -> Result<Self::Response, Status>;
 }
@@ -38,7 +41,7 @@ impl RequestHandler for SetRequestHandler {
     const METHOD_NAME: &'static str = "set";
 
     async fn handle_request(
-        request: Self::Request,
+        request: Traced<Self::Request>,
         mut handle: MachineServiceHandle<StorageMachine>,
     ) -> Result<Self::Response, Status> {
         handle.apply_mutation(request).await?;
@@ -55,10 +58,10 @@ impl RequestHandler for GetRequestHandler {
     const METHOD_NAME: &'static str = "get";
 
     async fn handle_request(
-        request: Self::Request,
+        request: Traced<Self::Request>,
         mut handle: MachineServiceHandle<StorageMachine>,
     ) -> Result<Self::Response, Status> {
-        let key = request.key.into_boxed_slice();
+        let key = request.map(|req| req.key.into_boxed_slice());
         let value = handle.query_state(key).await?;
 
         Ok(GetReply {
@@ -79,29 +82,32 @@ impl RayStorageService {
         let start = Instant::now();
         counter!("rayd.rpc.request_count", 1, "method" => T::METHOD_NAME);
 
+        let uuid = Uuid::new_v4();
+
         let inner = async {
             let remote_addr = request
                 .remote_addr()
                 .ok_or_else(|| Status::new(Code::Aborted, "unknown IP"))?;
-
             debug!(
-                "New request: {} (remote: {})",
+                "New request: {} (remote: {}, uuid: {})",
                 request.get_ref(),
-                remote_addr
+                remote_addr,
+                uuid,
             );
 
-            let response = T::handle_request(request.into_inner(), self.handle.clone())
+            let traced = Traced::with_id(uuid, request.into_inner());
+            T::handle_request(traced, self.handle.clone())
                 .await
-                .map(Response::new);
-
-            debug!("Replying: {:?} (to: {})", response, remote_addr);
-
-            response
+                .map(Response::new)
         };
 
         let response = inner.await;
-        if response.is_err() {
-            counter!("rayd.rpc.error_count", 1, "method" => T::METHOD_NAME);
+        match response {
+            Ok(ref inner) => debug!("Replying OK: {} (uuid: {})", inner.get_ref(), uuid),
+            Err(ref err) => {
+                debug!("Replying ERROR: {} (uuid: {})", err, uuid);
+                counter!("rayd.rpc.error_count", 1, "method" => T::METHOD_NAME);
+            },
         }
 
         timing!("rayd.rpc.request_duration", start, Instant::now(), "method" => T::METHOD_NAME);

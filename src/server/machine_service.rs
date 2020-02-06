@@ -2,7 +2,7 @@ use super::journal_service::JournalServiceRequest;
 
 use crate::{
     errors::*,
-    util::{ProfiledReceiver, ProfiledSender},
+    util::{Traced, ProfiledReceiver, ProfiledSender},
 };
 
 use prost::Message;
@@ -35,12 +35,12 @@ pub trait Machine: Default + Clone + Send + 'static {
 
 pub enum MachineServiceRequest<M: Machine> {
     Query {
-        query: M::Query,
+        query: Traced<M::Query>,
         min_epoch: u64,
         result: oneshot::Sender<M::Status>,
     },
     Proposal {
-        mutation: M::Mutation,
+        mutation: Traced<M::Mutation>,
         epoch: u64,
     },
 }
@@ -72,7 +72,7 @@ impl<M: Machine> MachineServiceHandle<M> {
         }
     }
 
-    pub async fn apply_mutation(&mut self, mutation: M::Mutation) -> Result<()> {
+    pub async fn apply_mutation(&mut self, mutation: Traced<M::Mutation>) -> Result<()> {
         let (sender, receiver) = oneshot::channel();
         let request = JournalServiceRequest {
             mutation,
@@ -85,7 +85,7 @@ impl<M: Machine> MachineServiceHandle<M> {
         receiver.await.chain_err(|| "sender dropped")
     }
 
-    pub async fn query_state(&mut self, query: M::Query) -> Result<M::Status> {
+    pub async fn query_state(&mut self, query: Traced<M::Query>) -> Result<M::Status> {
         let epoch = self.persisted_epoch.load(atomic::Ordering::Acquire);
         let (sender, receiver) = oneshot::channel();
         let request = MachineServiceRequest::Query {
@@ -162,8 +162,9 @@ impl<M: Machine> MachineService<M> {
                 .chain_err(|| "request_receiver failed")?
             {
                 MachineServiceRequest::Proposal { mutation, epoch } => {
+                    debug!("Applying mutation (id: {}, new epoch: {})", mutation.id, epoch);
                     counter!("rayd.machine_service.proposal_count", 1);
-                    self.handle_proposal(mutation, epoch).await;
+                    self.handle_proposal(mutation.into_payload(), epoch).await;
                     gauge!("rayd.machine_service.epoch", self.epoch as i64);
                 }
                 MachineServiceRequest::Query {
@@ -171,8 +172,9 @@ impl<M: Machine> MachineService<M> {
                     min_epoch,
                     result,
                 } => {
+                    debug!("Serving query (id: {}, epoch: {})", query.id, self.epoch);
                     counter!("rayd.machine_service.query_count", 1);
-                    self.handle_query(query, min_epoch, result);
+                    self.handle_query(query.into_payload(), min_epoch, result);
                 }
             }
         }
@@ -180,11 +182,6 @@ impl<M: Machine> MachineService<M> {
 
     async fn handle_proposal(&mut self, mutation: M::Mutation, epoch: u64) {
         assert_eq!(epoch, self.epoch + 1);
-        debug!(
-            "Applying mutation: {} (new epoch: {})",
-            mutation,
-            self.epoch + 1
-        );
         self.machine.apply_mutation(mutation);
         self.epoch += 1;
 

@@ -8,6 +8,8 @@ use tokio::sync::mpsc::{
     unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender,
 };
 
+use uuid::Uuid;
+
 use std::{
     io::{self, Read},
     process::Command,
@@ -16,6 +18,34 @@ use std::{
         Arc,
     },
 };
+
+#[derive(Clone, Debug)]
+pub struct Traced<T> {
+    pub id: Uuid,
+    pub payload: T,
+}
+
+impl<T> Traced<T> {
+    pub fn new(payload: T) -> Self {
+        let id = Uuid::new_v4();
+        Self { id, payload }
+    }
+
+    pub fn with_id(id: Uuid, payload: T) -> Self {
+        Self { id, payload }
+    }
+
+    pub fn into_payload(self) -> T {
+        self.payload
+    }
+
+    pub fn map<U, F: FnOnce(T) -> U>(self, func: F) -> Traced<U> {
+        Traced::<U> {
+            id: self.id,
+            payload: func(self.payload),
+        }
+    }
+}
 
 pub fn try_read_u32<T: Read>(reader: &mut T) -> io::Result<Option<u32>> {
     let mut buffer = [0u8; 4];
