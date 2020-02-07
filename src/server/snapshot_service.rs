@@ -1,8 +1,9 @@
-use super::machine_service::Machine;
+use super::{logging_service::FastlogMessage, machine_service::Machine};
 
 use crate::{
     errors::*,
-    util::{ProfiledUnboundedReceiver, ProfiledUnboundedSender},
+    fastlog,
+    util::{ProfiledUnboundedReceiver, ProfiledUnboundedSender, Traced},
 };
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -25,7 +26,7 @@ pub trait SnapshotStorage: Send + 'static {
 
 #[derive(Debug)]
 pub struct MutationProposal<U> {
-    pub mutation: U,
+    pub mutation: Traced<U>,
     pub epoch: u64,
 }
 
@@ -111,16 +112,14 @@ impl<S: SnapshotStorage, M: Machine> SnapshotService<S, M> {
 
             let MutationProposal { mutation, epoch } = proposal;
 
-            if epoch <= self.epoch {
-                debug!(
-                    "Rejected proposal: stale epoch (machine epoch: {}, proposal epoch: {})",
-                    self.epoch, epoch,
-                );
-                continue;
-            }
-
             assert_eq!(epoch, self.epoch + 1);
-            self.machine.apply_mutation(mutation);
+
+            fastlog!(FastlogMessage::ApplyingMutation {
+                epoch: self.epoch + 1,
+                id: mutation.id
+            });
+
+            self.machine.apply_mutation(mutation.into_payload());
             self.epoch += 1;
         }
         Ok(())

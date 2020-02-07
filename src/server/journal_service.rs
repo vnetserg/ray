@@ -1,11 +1,16 @@
 use super::{
+    logging_service::FastlogMessage,
     machine_service::{Machine, MachineServiceRequest},
     snapshot_service::MutationProposal,
 };
 
 use crate::{
     errors::*,
-    util::{Traced, ProfiledReceiver, ProfiledSender, ProfiledUnboundedReceiver, ProfiledUnboundedSender},
+    fastlog,
+    util::{
+        ProfiledReceiver, ProfiledSender, ProfiledUnboundedReceiver, ProfiledUnboundedSender,
+        Traced,
+    },
 };
 
 use prost::Message;
@@ -76,7 +81,7 @@ impl<M: Machine> JournalServiceBase<M> {
     async fn send_proposal(&mut self, mutation: Traced<M::Mutation>, epoch: u64) -> Result<()> {
         self.snapshot_sender
             .send(MutationProposal {
-                mutation: mutation.payload.clone(),
+                mutation: mutation.clone(),
                 epoch,
             })
             .chain_err(|| "snapshot_sender failed")?;
@@ -348,11 +353,16 @@ impl<W: JournalWriter, M: Machine> JournalService<W, M> {
                 self.persisted_epoch as i64
             );
 
-            debug!(
-                "Wrote {} mutations to journal (persisted epoch: {})",
-                proposals.len(),
-                self.persisted_epoch,
-            );
+            let now = chrono::Utc::now();
+            for (mutation, epoch) in proposals.iter() {
+                fastlog!(
+                    now: now,
+                    FastlogMessage::PersistedMutation {
+                        epoch: *epoch,
+                        id: mutation.id,
+                    }
+                );
+            }
 
             for notify in notifiers.into_iter() {
                 notify.send(()).ok(); // Ignore error

@@ -120,6 +120,7 @@ impl Default for SnapshotStorageConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct LoggingConfig {
     pub buffer_size: usize,
+    pub fastlog_threads: u16,
     pub modules: Vec<String>,
     pub targets: Vec<LoggingTargetConfig>,
 }
@@ -128,6 +129,7 @@ impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
             buffer_size: 1_000_000,
+            fastlog_threads: 4,
             modules: vec!["ray".to_string(), "panic".to_string()],
             targets: vec![LoggingTargetConfig {
                 target: LoggingTarget::Stderr,

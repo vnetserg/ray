@@ -89,7 +89,7 @@ impl RayStorageService {
                 .remote_addr()
                 .ok_or_else(|| Status::new(Code::Aborted, "unknown IP"))?;
             debug!(
-                "New request: {} (remote: {}, uuid: {})",
+                "New request: {} (remote: {}, id: {})",
                 request.get_ref(),
                 remote_addr,
                 uuid,
@@ -103,11 +103,11 @@ impl RayStorageService {
 
         let response = inner.await;
         match response {
-            Ok(ref inner) => debug!("Replying OK: {} (uuid: {})", inner.get_ref(), uuid),
+            Ok(ref inner) => debug!("Replying OK: {} (id: {})", inner.get_ref(), uuid),
             Err(ref err) => {
-                debug!("Replying ERROR: {} (uuid: {})", err, uuid);
+                debug!("Replying ERROR: {} (id: {})", err, uuid);
                 counter!("rayd.rpc.error_count", 1, "method" => T::METHOD_NAME);
-            },
+            }
         }
 
         timing!("rayd.rpc.request_duration", start, Instant::now(), "method" => T::METHOD_NAME);

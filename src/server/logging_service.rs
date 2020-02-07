@@ -1,16 +1,19 @@
 use super::config::{LoggingConfig, LoggingTarget};
 use crate::{
     errors::*,
-    util::{ProfiledUnboundedReceiver, ProfiledUnboundedSender},
+    util::{do_and_die, ProfiledUnboundedReceiver, ProfiledUnboundedSender},
 };
 
-use log::{Level, LevelFilter, Log, Metadata, Record};
-use metrics::gauge;
-
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use crossbeam::channel::{unbounded, Receiver, Sender};
+use lazy_static::lazy_static;
+use uuid::Uuid;
 
 use libc::STDERR_FILENO;
 use nix::unistd::dup;
+
+use log::{Level, LevelFilter, Log, Metadata, Record};
+use metrics::gauge;
 
 use tokio::sync::mpsc::error::TryRecvError;
 
@@ -18,7 +21,16 @@ use std::{
     fs::{File, OpenOptions},
     io::{BufWriter, Write},
     os::unix::io::FromRawFd,
+    thread,
 };
+
+lazy_static! {
+    static ref FASTLOG_CHANNEL: (Sender<FastlogRecord>, Receiver<FastlogRecord>) = unbounded();
+    pub static ref FASTLOG_SENDER: Sender<FastlogRecord> = FASTLOG_CHANNEL.0.clone();
+    static ref FASTLOG_RECEIVER: Receiver<FastlogRecord> = FASTLOG_CHANNEL.1.clone();
+}
+
+const DATETIME_FORMAT: &str = "%F %T%.3f";
 
 pub struct LoggingService {
     receiver: ProfiledUnboundedReceiver<(String, Level)>,
@@ -103,7 +115,7 @@ impl Log for LoggingServiceFacade {
         if self.enabled(record.metadata()) {
             let message = format!(
                 "{} [{}] {}: {}\n",
-                Utc::now().format("%F %T%.3f"),
+                Utc::now().format(DATETIME_FORMAT),
                 record.level(),
                 record.module_path().unwrap_or("unknown"),
                 record.args(),
@@ -138,4 +150,105 @@ impl LoggingServiceFacade {
             .map(|_| log::set_max_level(max_level))
             .chain_err(|| "failed to set logger")
     }
+}
+
+pub struct FastlogRecord {
+    pub datetime: DateTime<Utc>,
+    pub module: &'static str,
+    pub message: FastlogMessage,
+}
+
+impl ToString for FastlogRecord {
+    fn to_string(&self) -> String {
+        format!(
+            "{} [DEBUG] {}: {}\n",
+            self.datetime.format(DATETIME_FORMAT),
+            self.module,
+            self.message.to_string()
+        )
+    }
+}
+
+pub enum FastlogMessage {
+    ApplyingMutation { epoch: u64, id: Uuid },
+    ServingQuery { epoch: u64, id: Uuid },
+    PersistedMutation { epoch: u64, id: Uuid },
+}
+
+impl ToString for FastlogMessage {
+    fn to_string(&self) -> String {
+        match self {
+            Self::ApplyingMutation { epoch, id } => {
+                format!("Applying mutation (id: {}, new epoch: {})", id, epoch)
+            }
+            Self::ServingQuery { epoch, id } => {
+                format!("Serving query (id: {}, epoch: {})", id, epoch)
+            }
+            Self::PersistedMutation { epoch, id } => {
+                format!("Persisted mutation (id: {}, epoch: {})", id, epoch)
+            }
+        }
+    }
+}
+
+pub struct FastlogService {
+    receiver: Receiver<FastlogRecord>,
+    sender: ProfiledUnboundedSender<(String, Level)>,
+}
+
+impl FastlogService {
+    pub fn init(sender: ProfiledUnboundedSender<(String, Level)>, threads: u16) -> Result<()> {
+        let threads = if threads == 0 {
+            num_cpus::get()
+        } else {
+            threads as usize
+        };
+        for _ in 0..threads {
+            let thread_sender = sender.clone();
+            let thread = thread::Builder::new()
+                .name("rayd-fastlog".to_string())
+                .spawn(move || {
+                    let receiver = FASTLOG_RECEIVER.clone();
+                    let mut worker = FastlogService {
+                        receiver,
+                        sender: thread_sender,
+                    };
+                    do_and_die(move || worker.run());
+                });
+            thread.chain_err(|| "failed to spawn thread")?;
+        }
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<()> {
+        for record in self.receiver.iter() {
+            let message = record.to_string();
+            self.sender
+                .send((message, Level::Debug))
+                .chain_err(|| "sender failed")?;
+        }
+        bail!("receiver terminated");
+    }
+}
+
+#[macro_export]
+macro_rules! fastlog {
+    ($message:expr) => {
+        crate::server::logging_service::FASTLOG_SENDER
+            .send(crate::server::logging_service::FastlogRecord {
+                datetime: ::chrono::Utc::now(),
+                module: ::std::module_path!(),
+                message: $message,
+            })
+            .expect("fastlog sender failed")
+    };
+    (now: $now:expr, $message:expr) => {
+        crate::server::logging_service::FASTLOG_SENDER
+            .send(crate::server::logging_service::FastlogRecord {
+                datetime: $now,
+                module: ::std::module_path!(),
+                message: $message,
+            })
+            .expect("fastlog sender failed")
+    };
 }

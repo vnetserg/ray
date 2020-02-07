@@ -1,8 +1,9 @@
-use super::journal_service::JournalServiceRequest;
+use super::{journal_service::JournalServiceRequest, logging_service::FastlogMessage};
 
 use crate::{
     errors::*,
-    util::{Traced, ProfiledReceiver, ProfiledSender},
+    fastlog,
+    util::{ProfiledReceiver, ProfiledSender, Traced},
 };
 
 use prost::Message;
@@ -162,7 +163,10 @@ impl<M: Machine> MachineService<M> {
                 .chain_err(|| "request_receiver failed")?
             {
                 MachineServiceRequest::Proposal { mutation, epoch } => {
-                    debug!("Applying mutation (id: {}, new epoch: {})", mutation.id, epoch);
+                    fastlog!(FastlogMessage::ApplyingMutation {
+                        epoch: self.epoch + 1,
+                        id: mutation.id
+                    });
                     counter!("rayd.machine_service.proposal_count", 1);
                     self.handle_proposal(mutation.into_payload(), epoch).await;
                     gauge!("rayd.machine_service.epoch", self.epoch as i64);
@@ -172,7 +176,10 @@ impl<M: Machine> MachineService<M> {
                     min_epoch,
                     result,
                 } => {
-                    debug!("Serving query (id: {}, epoch: {})", query.id, self.epoch);
+                    fastlog!(FastlogMessage::ServingQuery {
+                        epoch: self.epoch,
+                        id: query.id
+                    });
                     counter!("rayd.machine_service.query_count", 1);
                     self.handle_query(query.into_payload(), min_epoch, result);
                 }

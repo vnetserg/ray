@@ -14,7 +14,7 @@ use config::{LoggingConfig, MetricsConfig, PsmConfig};
 use directory_journal::DirectoryJournalReader;
 use directory_snapshot_storage::DirectorySnapshotStorage;
 use journal_service::{JournalReader, JournalServiceRestorer};
-use logging_service::{LoggingService, LoggingServiceFacade};
+use logging_service::{FastlogService, LoggingService, LoggingServiceFacade};
 use machine_service::{Machine, MachineService, MachineServiceHandle};
 use rpc::RayStorageService;
 use snapshot_service::{read_snapshot, SnapshotService, SnapshotStorage};
@@ -23,7 +23,7 @@ use crate::{
     errors::*,
     proto::storage_server::StorageServer,
     util::{
-        get_children_pids, get_process_cpu_time, get_process_name, profiled_channel,
+        do_and_die, get_children_pids, get_process_cpu_time, get_process_name, profiled_channel,
         profiled_unbounded_channel,
     },
 };
@@ -39,7 +39,6 @@ use metrics_runtime::{
 use std::{
     future::Future,
     net::SocketAddr,
-    panic::{catch_unwind, AssertUnwindSafe},
     process::exit,
     sync::{atomic::AtomicU64, Arc},
     thread,
@@ -82,7 +81,8 @@ fn init_logging(config: &LoggingConfig) -> Result<()> {
         logging_service.serve().await
     })?;
 
-    LoggingServiceFacade::init(log_sender, config)?;
+    LoggingServiceFacade::init(log_sender.clone(), config)?;
+    FastlogService::init(log_sender, config.fastlog_threads)?;
     log_panics::init();
 
     Ok(())
@@ -309,19 +309,7 @@ fn run_in_dedicated_thread<T: Future<Output = Result<()>> + Send + 'static>(
                 exit(1);
             });
 
-            let result = catch_unwind(AssertUnwindSafe(move || runtime.block_on(task)));
-
-            match result {
-                Ok(Ok(())) => error!("Thread '{}' finished unexpectedly", thread_name),
-                Ok(Err(err)) => error!(
-                    "Thread '{}' failed (error chain below)\n{}",
-                    thread_name,
-                    err.display_fancy_chain()
-                ),
-                Err(_) => (), // panic occured, error is already logged by the panic hook.
-            }
-
-            exit(1);
+            do_and_die(move || runtime.block_on(task));
         });
 
     thread.chain_err(|| "failed to spawn thread")?;

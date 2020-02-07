@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use std::{
     io::{self, Read},
+    panic::{catch_unwind, AssertUnwindSafe},
     process::Command,
     sync::{
         atomic::{AtomicI64, Ordering},
@@ -45,6 +46,26 @@ impl<T> Traced<T> {
             payload: func(self.payload),
         }
     }
+}
+
+pub fn do_and_die<F: FnOnce() -> Result<()>>(func: F) -> ! {
+    let result = catch_unwind(AssertUnwindSafe(func));
+    let thread_name = std::thread::current()
+        .name()
+        .unwrap_or("unknown")
+        .to_string();
+
+    match result {
+        Ok(Ok(())) => error!("Thread '{}' finished unexpectedly", thread_name),
+        Ok(Err(err)) => error!(
+            "Thread '{}' failed (error chain below)\n{}",
+            thread_name,
+            err.display_fancy_chain()
+        ),
+        Err(_) => (), // panic occured, error is already logged by the panic hook.
+    }
+
+    std::process::exit(1);
 }
 
 pub fn try_read_u32<T: Read>(reader: &mut T) -> io::Result<Option<u32>> {
