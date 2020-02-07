@@ -18,6 +18,7 @@ use metrics::gauge;
 use tokio::sync::mpsc::error::TryRecvError;
 
 use std::{
+    fmt::{self, Display},
     fs::{File, OpenOptions},
     io::{BufWriter, Write},
     os::unix::io::FromRawFd,
@@ -164,7 +165,7 @@ impl ToString for FastlogRecord {
             "{} [DEBUG] {}: {}\n",
             self.datetime.format(DATETIME_FORMAT),
             self.module,
-            self.message.to_string()
+            self.message,
         )
     }
 }
@@ -173,19 +174,23 @@ pub enum FastlogMessage {
     ApplyingMutation { epoch: u64, id: Uuid },
     ServingQuery { epoch: u64, id: Uuid },
     PersistedMutation { epoch: u64, id: Uuid },
+    RecoveredMutation { epoch: u64, id: Uuid },
 }
 
-impl ToString for FastlogMessage {
-    fn to_string(&self) -> String {
+impl Display for FastlogMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ApplyingMutation { epoch, id } => {
-                format!("Applying mutation (id: {}, new epoch: {})", id, epoch)
+                write!(f, "Applying mutation (id: {}, new epoch: {})", id, epoch)
             }
             Self::ServingQuery { epoch, id } => {
-                format!("Serving query (id: {}, epoch: {})", id, epoch)
+                write!(f, "Serving query (id: {}, epoch: {})", id, epoch)
             }
             Self::PersistedMutation { epoch, id } => {
-                format!("Persisted mutation (id: {}, epoch: {})", id, epoch)
+                write!(f, "Persisted mutation (id: {}, epoch: {})", id, epoch)
+            }
+            Self::RecoveredMutation { epoch, id } => {
+                write!(f, "Recovered mutation (id: {}, epoch: {})", id, epoch)
             }
         }
     }
@@ -229,6 +234,10 @@ impl FastlogService {
         }
         bail!("receiver terminated");
     }
+}
+
+pub fn fastlog_queue_size() -> usize {
+    FASTLOG_SENDER.len()
 }
 
 #[macro_export]

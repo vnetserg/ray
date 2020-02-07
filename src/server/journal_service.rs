@@ -206,6 +206,10 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
 
                     if epoch > self.snapshot_epoch {
                         let traced = Traced::new(mutation);
+                        fastlog!(FastlogMessage::RecoveredMutation {
+                            id: traced.id,
+                            epoch: epoch,
+                        });
                         self.base.send_proposal(traced, epoch).await?;
                     }
 

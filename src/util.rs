@@ -124,6 +124,49 @@ pub fn get_process_cpu_time(pid: u32) -> Result<u64> {
     Ok((value * 1000.) as u64)
 }
 
+pub struct ThreadCpuTimeInfo {
+    pub pid: u32,
+    pub name: String,
+    pub cpu_time: u64,
+}
+
+pub fn get_thread_cpu_times(main_pid: u32) -> Result<Vec<ThreadCpuTimeInfo>> {
+    let pids = get_children_pids(main_pid).chain_err(|| "failed to get children pids")?;
+    let info = pids
+        .into_iter()
+        .filter_map(|pid| {
+            let name = match get_process_name(pid) {
+                Ok(name) => name,
+                Err(err) => {
+                    warn!(
+                        "Failed to get process name (pid {}):\n{}",
+                        pid,
+                        err.display_fancy_chain()
+                    );
+                    return None;
+                }
+            };
+            let cpu_time = match get_process_cpu_time(pid) {
+                Ok(cpu_time) => cpu_time,
+                Err(err) => {
+                    warn!(
+                        "Failed to get process cpu time (pid {}):\n{}",
+                        pid,
+                        err.display_fancy_chain()
+                    );
+                    return None;
+                }
+            };
+            Some(ThreadCpuTimeInfo {
+                pid,
+                name,
+                cpu_time,
+            })
+        })
+        .collect();
+    Ok(info)
+}
+
 pub fn profiled_channel<T>(max_size: usize) -> (ProfiledSender<T>, ProfiledReceiver<T>) {
     let (sender, receiver) = channel(max_size);
     let size = Arc::new(AtomicI64::new(0));

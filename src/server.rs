@@ -14,7 +14,7 @@ use config::{LoggingConfig, MetricsConfig, PsmConfig};
 use directory_journal::DirectoryJournalReader;
 use directory_snapshot_storage::DirectorySnapshotStorage;
 use journal_service::{JournalReader, JournalServiceRestorer};
-use logging_service::{FastlogService, LoggingService, LoggingServiceFacade};
+use logging_service::{fastlog_queue_size, FastlogService, LoggingService, LoggingServiceFacade};
 use machine_service::{Machine, MachineService, MachineServiceHandle};
 use rpc::RayStorageService;
 use snapshot_service::{read_snapshot, SnapshotService, SnapshotStorage};
@@ -22,10 +22,7 @@ use snapshot_service::{read_snapshot, SnapshotService, SnapshotStorage};
 use crate::{
     errors::*,
     proto::storage_server::StorageServer,
-    util::{
-        do_and_die, get_children_pids, get_process_cpu_time, get_process_name, profiled_channel,
-        profiled_unbounded_channel,
-    },
+    util::{do_and_die, get_thread_cpu_times, profiled_channel, profiled_unbounded_channel},
 };
 
 use tokio::{runtime, sync::oneshot};
@@ -97,45 +94,35 @@ fn init_metrics(config: &MetricsConfig) -> Result<()> {
         .build()
         .chain_err(|| "failed to create metrics receiver")?;
 
+    // Collect thread cpu usage info
     let main_pid = std::process::id();
     receiver.sink().proxy("rayd", move || {
-        let pids = match get_children_pids(main_pid) {
-            Ok(pids) => pids,
+        let cpu_times = match get_thread_cpu_times(main_pid) {
+            Ok(times) => times,
             Err(err) => {
-                warn!("Failed to get child pids:\n{}", err.display_fancy_chain());
+                warn!(
+                    "Failed to get thread cpu times:\n{}",
+                    err.display_fancy_chain()
+                );
                 return Vec::new();
             }
         };
-        pids.into_iter()
-            .filter_map(|pid| {
-                let name = match get_process_name(pid) {
-                    Ok(name) => name,
-                    Err(err) => {
-                        warn!(
-                            "Failed to get process name (pid {}):\n{}",
-                            pid,
-                            err.display_fancy_chain()
-                        );
-                        return None;
-                    }
-                };
-                let cpu_time = match get_process_cpu_time(pid) {
-                    Ok(cpu_time) => cpu_time,
-                    Err(err) => {
-                        warn!(
-                            "Failed to get process cpu time (pid {}):\n{}",
-                            pid,
-                            err.display_fancy_chain()
-                        );
-                        return None;
-                    }
-                };
-                let labels = labels!("pid" => pid.to_string(), "name" => name);
+
+        let mut metrics: Vec<_> = cpu_times
+            .into_iter()
+            .map(|info| {
+                let labels = labels!("pid" => info.pid.to_string(), "name" => info.name);
                 let key = Key::from_name_and_labels("cpu_time", labels);
-                let value = Measurement::Gauge(cpu_time as i64);
-                Some((key, value))
+                let value = Measurement::Gauge(info.cpu_time as i64);
+                (key, value)
             })
-            .collect()
+            .collect();
+
+        let key = Key::from_name("fastlog_service.queue_size");
+        let value = Measurement::Gauge(fastlog_queue_size() as i64);
+        metrics.push((key, value));
+
+        metrics
     });
 
     let address = config
