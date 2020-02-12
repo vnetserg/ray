@@ -226,7 +226,7 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
         }
 
         let last_epoch = last_epoch.unwrap_or(0);
-        if last_epoch < self.snapshot_epoch {
+        if last_epoch > 0 && last_epoch < self.snapshot_epoch {
             bail!(
                 "Missing mutation(s): snapshot epoch {}, got mutations only up to epoch {}",
                 self.snapshot_epoch,
@@ -240,6 +240,8 @@ impl<R: JournalReader, M: Machine> JournalServiceRestorer<R, M> {
                 "Recovered {} mutations from journal (epoch range: [{}, {}])",
                 mutation_count, first_epoch, last_epoch
             );
+        } else {
+            info!("No mutations recovered from journal");
         }
 
         // Notice: before this point, the value of the external_epoch atomic was zero.
