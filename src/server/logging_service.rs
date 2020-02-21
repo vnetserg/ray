@@ -33,14 +33,27 @@ lazy_static! {
 
 const DATETIME_FORMAT: &str = "%F %T%.3f";
 
+#[derive(Debug)]
+enum ShutdownType {
+    Abort,
+    ExitZero,
+}
+
+#[derive(Debug)]
+pub struct LoggingServiceMessage {
+    text: String,
+    level: Level,
+    shutdown: Option<ShutdownType>,
+}
+
 pub struct LoggingService {
-    receiver: ProfiledUnboundedReceiver<(String, Level)>,
+    receiver: ProfiledUnboundedReceiver<LoggingServiceMessage>,
     writers: Vec<(BufWriter<File>, LevelFilter)>,
 }
 
 impl LoggingService {
     pub fn new(
-        receiver: ProfiledUnboundedReceiver<(String, Level)>,
+        receiver: ProfiledUnboundedReceiver<LoggingServiceMessage>,
         config: &LoggingConfig,
     ) -> Result<Self> {
         let mut writers = vec![];
@@ -69,8 +82,8 @@ impl LoggingService {
                 "rayd.logging_service.queue_size",
                 self.receiver.approx_len()
             );
-            let (message, level) = match self.receiver.try_recv() {
-                Ok(result) => result,
+            let message = match self.receiver.try_recv() {
+                Ok(message) => message,
                 Err(TryRecvError::Empty) => {
                     self.flush().chain_err(|| "failed to flush writers")?;
                     self.receiver.recv().await.chain_err(|| "receiver failed")?
@@ -79,12 +92,25 @@ impl LoggingService {
                     bail!("receiver is closed");
                 }
             };
-            for (writer, filter) in self.writers.iter_mut() {
-                if level <= *filter {
-                    writer
-                        .write(message.as_bytes())
-                        .chain_err(|| format!("failed to write message '{}'", message))?;
+            if !message.text.is_empty() {
+                for (writer, filter) in self.writers.iter_mut() {
+                    if message.level <= *filter {
+                        writer
+                            .write(message.text.as_bytes())
+                            .chain_err(|| format!("failed to write message '{}'", message.text))?;
+                    }
                 }
+            }
+            match message.shutdown {
+                Some(shutdown_type) => {
+                    self.flush().chain_err(|| "failed to flush writers")?;
+                    let exit_code = match shutdown_type {
+                        ShutdownType::Abort => 1,
+                        ShutdownType::ExitZero => 0,
+                    };
+                    std::process::exit(exit_code);
+                },
+                None => (),
             }
         }
     }
@@ -98,7 +124,7 @@ impl LoggingService {
 }
 
 pub struct LoggingServiceFacade {
-    sender: ProfiledUnboundedSender<(String, Level)>,
+    sender: ProfiledUnboundedSender<LoggingServiceMessage>,
     modules: Vec<String>,
     max_level: LevelFilter,
 }
@@ -114,15 +140,21 @@ impl Log for LoggingServiceFacade {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
-            let message = format!(
+            let text = format!(
                 "{} [{}] {}: {}\n",
                 Utc::now().format(DATETIME_FORMAT),
                 record.level(),
                 record.module_path().unwrap_or("unknown"),
                 record.args(),
             );
+            let level = record.level();
+            let shutdown = match record.metadata().target() {
+                "abort" => Some(ShutdownType::Abort),
+                "exit" => Some(ShutdownType::ExitZero),
+                _ => None,
+            };
             self.sender
-                .send((message, record.level()))
+                .send(LoggingServiceMessage { text, level, shutdown })
                 .expect("logging service is dead");
         }
     }
@@ -132,7 +164,7 @@ impl Log for LoggingServiceFacade {
 
 impl LoggingServiceFacade {
     pub fn init(
-        sender: ProfiledUnboundedSender<(String, Level)>,
+        sender: ProfiledUnboundedSender<LoggingServiceMessage>,
         config: &LoggingConfig,
     ) -> Result<()> {
         let max_level = config
@@ -141,7 +173,11 @@ impl LoggingServiceFacade {
             .map(|target| LevelFilter::from(target.level))
             .max()
             .unwrap_or(LevelFilter::Off);
-        let modules = config.modules.clone();
+
+        let mut modules = config.modules.clone();
+        modules.push("abort".to_string());
+        modules.push("exit".to_string());
+
         let facade = Box::new(LoggingServiceFacade {
             sender,
             max_level,
@@ -151,6 +187,21 @@ impl LoggingServiceFacade {
             .map(|_| log::set_max_level(max_level))
             .chain_err(|| "failed to set logger")
     }
+
+    pub fn clean_exit() -> ! {
+        info!(target: "exit", "");
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        std::process::exit(1);
+    }
+}
+
+#[macro_export]
+macro_rules! fatal {
+    ($($arg:tt)+) => {{
+        error!(target: "abort", $($arg)+);
+        ::std::thread::sleep(std::time::Duration::from_secs(5));
+        ::std::process::exit(1);
+    }}
 }
 
 pub struct FastlogRecord {
@@ -198,11 +249,11 @@ impl Display for FastlogMessage {
 
 pub struct FastlogService {
     receiver: Receiver<FastlogRecord>,
-    sender: ProfiledUnboundedSender<(String, Level)>,
+    sender: ProfiledUnboundedSender<LoggingServiceMessage>,
 }
 
 impl FastlogService {
-    pub fn init(sender: ProfiledUnboundedSender<(String, Level)>, threads: u16) -> Result<()> {
+    pub fn init(sender: ProfiledUnboundedSender<LoggingServiceMessage>, threads: u16) -> Result<()> {
         let threads = if threads == 0 {
             num_cpus::get()
         } else {
@@ -227,9 +278,13 @@ impl FastlogService {
 
     fn run(&mut self) -> Result<()> {
         for record in self.receiver.iter() {
-            let message = record.to_string();
+            let message = LoggingServiceMessage {
+                text: record.to_string(),
+                level: Level::Debug,
+                shutdown: None,
+            };
             self.sender
-                .send((message, Level::Debug))
+                .send(message)
                 .chain_err(|| "sender failed")?;
         }
         bail!("receiver terminated");

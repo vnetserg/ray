@@ -21,6 +21,7 @@ use snapshot_service::{read_snapshot, SnapshotService, SnapshotStorage};
 
 use crate::{
     errors::*,
+    fatal,
     proto::storage_server::StorageServer,
     util::{do_and_die, get_thread_cpu_times, profiled_channel, profiled_unbounded_channel},
 };
@@ -51,22 +52,20 @@ pub fn serve_forever(config: Config) -> ! {
     });
 
     init_metrics(&config.metrics).unwrap_or_else(|err| {
-        error!(
+        fatal!(
             "Failed to initialize metrics (error chain below)\n{}",
             err.display_fancy_chain()
         );
-        exit(1);
     });
 
     start_server(config).unwrap_or_else(|err| {
-        error!(
+        fatal!(
             "Failed to start server (error chain below)\n{}",
             err.display_fancy_chain()
         );
-        exit(1);
     });
 
-    exit(0);
+    LoggingServiceFacade::clean_exit();
 }
 
 fn init_logging(config: &LoggingConfig) -> Result<()> {
@@ -292,8 +291,7 @@ fn run_in_dedicated_thread<T: Future<Output = Result<()>> + Send + 'static>(
             }
 
             let mut runtime = builder.build().unwrap_or_else(|err| {
-                error!("Failed to build Tokio runtime: {}", err);
-                exit(1);
+                fatal!("Failed to build Tokio runtime: {}", err);
             });
 
             do_and_die(move || runtime.block_on(task));

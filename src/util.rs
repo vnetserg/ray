@@ -1,4 +1,4 @@
-use crate::errors::*;
+use crate::{errors::*, fatal};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -56,16 +56,17 @@ pub fn do_and_die<F: FnOnce() -> Result<()>>(func: F) -> ! {
         .to_string();
 
     match result {
-        Ok(Ok(())) => error!("Thread '{}' finished unexpectedly", thread_name),
-        Ok(Err(err)) => error!(
+        Ok(Ok(())) => fatal!("Thread '{}' finished unexpectedly", thread_name),
+        Ok(Err(err)) => fatal!(
             "Thread '{}' failed (error chain below)\n{}",
             thread_name,
             err.display_fancy_chain()
         ),
-        Err(_) => (), // panic occured, error is already logged by the panic hook.
+        Err(_) => {
+            // Panic occured, error is already logged by the panic hook.
+            fatal!("Thread '{}' panicked", thread_name);
+        }
     }
-
-    std::process::exit(1);
 }
 
 pub fn try_read_u32<T: Read>(reader: &mut T) -> io::Result<Option<u32>> {
